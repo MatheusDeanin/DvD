@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom Discord Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #2e3338;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #202225;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #18191c;
+}
+
+/* Speaking pulse ring */
+@keyframes speakingGlow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(87, 242, 135, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(87, 242, 135, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(87, 242, 135, 0);
+  }
+}
+
+.speaking-ring {
+  border: 3px solid #57F287 !important;
+  animation: speakingGlow 1.5s infinite;
+}
+
+/* User status badge dots */
+.status-dot-online {
+  background-color: #3ba55d;
+}
+.status-dot-idle {
+  background-color: #faa81a;
+}
+.status-dot-dnd {
+  background-color: #ed4245;
+}
+.status-dot-offline {
+  background-color: #747f8d;
+}
