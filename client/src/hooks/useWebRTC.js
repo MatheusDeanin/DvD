@@ -7,6 +7,8 @@ const ICE_SERVERS = {
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.services.mozilla.com' }
   ],
 };
 
@@ -128,18 +130,31 @@ export function useWebRTC(socket, currentUser) {
       }
     };
 
-    // Remote Track received
+    // Remote Track received (audio, camera or screen share)
     pc.ontrack = (event) => {
-      const [remoteStream] = event.streams;
+      const incomingStream = event.streams[0] || new MediaStream([event.track]);
+      const isVideo = event.track.kind === 'video';
+
       setPeers((prev) => {
         const existing = prev[targetSocketId] || { user: targetUser };
-        // Check if track is video and likely a screen share or camera
+
+        // Ensure audio/video tracks are attached to a primary stream
+        let primaryStream = existing.stream;
+        if (!primaryStream) {
+          primaryStream = incomingStream;
+        } else {
+          if (!primaryStream.getTracks().some((t) => t.id === event.track.id)) {
+            primaryStream.addTrack(event.track);
+          }
+        }
+
         return {
           ...prev,
           [targetSocketId]: {
             ...existing,
             user: targetUser || existing.user,
-            stream: remoteStream,
+            stream: primaryStream,
+            screenStream: isVideo ? incomingStream : existing.screenStream,
           },
         };
       });
@@ -307,7 +322,13 @@ export function useWebRTC(socket, currentUser) {
     if (isScreenSharing) {
       // Stop sharing
       if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach((track) => track.stop());
+        screenStreamRef.current.getTracks().forEach((track) => {
+          track.stop();
+          Object.values(peerConnectionsRef.current).forEach((pc) => {
+            const sender = pc.getSenders().find((s) => s.track === track);
+            if (sender) pc.removeTrack(sender);
+          });
+        });
         screenStreamRef.current = null;
       }
       setIsScreenSharing(false);
@@ -321,33 +342,46 @@ export function useWebRTC(socket, currentUser) {
             displaySurface: 'monitor',
             frameRate: { max: 60 },
           },
-          audio: true, // system audio if supported by browser
+          audio: true, // system audio
         });
 
         screenStreamRef.current = screenStream;
-        const screenTrack = screenStream.getVideoTracks()[0];
 
-        // Handle user clicking "Stop Sharing" on browser banner
-        screenTrack.onended = () => {
+        const stopScreen = () => {
+          if (screenStreamRef.current) {
+            screenStreamRef.current.getTracks().forEach((track) => track.stop());
+            screenStreamRef.current = null;
+          }
           setIsScreenSharing(false);
-          screenStreamRef.current = null;
           if (socket) socket.emit('voice_state_change', { isScreenSharing: false });
         };
 
-        // Add screen track to all peer connections
-        Object.entries(peerConnectionsRef.current).forEach(([targetSocketId, pc]) => {
-          pc.addTrack(screenTrack, screenStream);
-          pc.createOffer().then((offer) => pc.setLocalDescription(offer)).then(() => {
-            if (socket) {
-              socket.emit('webrtc_signal', { targetSocketId, signal: pc.localDescription });
-            }
-          });
-        });
+        screenStream.getVideoTracks()[0].onended = stopScreen;
 
         setIsScreenSharing(true);
         if (socket) socket.emit('voice_state_change', { isScreenSharing: true });
+
+        // Add all screen tracks (video + optional audio) to peer connections
+        screenStream.getTracks().forEach((track) => {
+          Object.values(peerConnectionsRef.current).forEach((pc) => {
+            pc.addTrack(track, screenStream);
+          });
+        });
+
+        // Renegotiate with all peers
+        Object.entries(peerConnectionsRef.current).forEach(async ([targetSocketId, pc]) => {
+          try {
+            const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+            await pc.setLocalDescription(offer);
+            if (socket) {
+              socket.emit('webrtc_signal', { targetSocketId, signal: pc.localDescription });
+            }
+          } catch (err) {
+            console.error('Erro na renegociação de compartilhamento de tela:', err);
+          }
+        });
       } catch (err) {
-        console.error('Failed to share screen:', err);
+        console.error('Falha ao compartilhar tela:', err);
       }
     }
   }, [isScreenSharing, socket]);

@@ -120,6 +120,27 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { login, newPassword } = req.body;
+    if (!login || !newPassword) {
+      return res.status(400).json({ error: 'Informe seu e-mail/usuário e a nova senha.' });
+    }
+    if (newPassword.length < 4) {
+      return res.status(400).json({ error: 'A nova senha deve ter no mínimo 4 caracteres.' });
+    }
+    const user = await db.getUserByEmailOrUsername(login.trim());
+    if (!user) {
+      return res.status(404).json({ error: 'Nenhuma conta encontrada com este e-mail ou usuário.' });
+    }
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const updated = await db.resetUserPassword(login.trim(), hashedPassword);
+    res.json({ success: true, message: 'Senha redefinida com sucesso!' });
+  } catch (err) {
+    res.status(500).json({ error: 'Falha ao redefinir senha: ' + err.message });
+  }
+});
+
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
   try {
     const user = await db.getUserById(req.user.id);
@@ -127,6 +148,80 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
       return res.status(404).json({ error: 'Usuário não encontrado.' });
     }
     res.json({ user });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ========================
+// FRIENDS & DM ROUTES
+// ========================
+app.get('/api/friends', authMiddleware, async (req, res) => {
+  try {
+    const friends = await db.getFriends(req.user.id);
+    res.json({ friends });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/friends/request', authMiddleware, async (req, res) => {
+  try {
+    const { username } = req.body;
+    if (!username) return res.status(400).json({ error: 'Informe o nome de usuário ou e-mail.' });
+    const request = await db.sendFriendRequest(req.user.id, username);
+    io.to(`user_${request.friend_id}`).emit('friend_request_received', {
+      friendshipId: request.id,
+      from: req.user
+    });
+    res.status(201).json({ request });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/friends/:id/accept', authMiddleware, async (req, res) => {
+  try {
+    const updated = await db.acceptFriendRequest(req.user.id, req.params.id);
+    if (!updated) return res.status(404).json({ error: 'Pedido não encontrado.' });
+    io.to(`user_${updated.user_id}`).emit('friend_request_accepted', {
+      friendshipId: updated.id,
+      by: req.user
+    });
+    res.json({ success: true, friendship: updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/friends/:id', authMiddleware, async (req, res) => {
+  try {
+    await db.removeFriend(req.user.id, req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/dms/:friendId', authMiddleware, async (req, res) => {
+  try {
+    const messages = await db.getDirectMessages(req.user.id, req.params.friendId);
+    res.json({ messages });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/dms/:friendId', authMiddleware, async (req, res) => {
+  try {
+    const { content, attachments } = req.body;
+    if (!content && (!attachments || attachments.length === 0)) {
+      return res.status(400).json({ error: 'Mensagem vazia.' });
+    }
+    const message = await db.createDirectMessage(req.user.id, req.params.friendId, content, attachments);
+    io.to(`user_${req.params.friendId}`).emit('new_dm', message);
+    io.to(`user_${req.user.id}`).emit('new_dm', message);
+    res.status(201).json({ message });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -100,6 +100,24 @@ async function createTables() {
       attachments JSONB DEFAULT '[]'::jsonb,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS friends (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      friend_id INT REFERENCES users(id) ON DELETE CASCADE,
+      status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, friend_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS direct_messages (
+      id SERIAL PRIMARY KEY,
+      sender_id INT REFERENCES users(id) ON DELETE CASCADE,
+      receiver_id INT REFERENCES users(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      attachments JSONB DEFAULT '[]'::jsonb,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
   `;
   await pool.query(queries);
   console.log(' Tabelas verificadas/criadas no Neon PostgreSQL.');
@@ -467,6 +485,214 @@ async function createMessage({ channelId, userId, content, attachments = [] }) {
   }
 }
 
+// Password Reset
+async function resetUserPassword(login, newHashedPassword) {
+  if (isPostgres) {
+    const res = await pool.query(
+      `UPDATE users SET password = $1 
+       WHERE LOWER(email) = LOWER($2) OR LOWER(username) = LOWER($2) 
+       RETURNING id, username, email, display_name`,
+      [newHashedPassword, login.trim()]
+    );
+    return res.rows[0] || null;
+  } else {
+    const user = memoryStore.users.find(
+      u => u.email.toLowerCase() === login.trim().toLowerCase() || u.username.toLowerCase() === login.trim().toLowerCase()
+    );
+    if (!user) return null;
+    user.password = newHashedPassword;
+    return { id: user.id, username: user.username, email: user.email, display_name: user.display_name };
+  }
+}
+
+// Friends Operations
+async function sendFriendRequest(userId, targetLogin) {
+  const target = await getUserByEmailOrUsername(targetLogin.trim());
+  if (!target) throw new Error('Usuário não encontrado. Verifique o nome de usuário ou e-mail.');
+  if (target.id === parseInt(userId)) throw new Error('Você não pode adicionar a si mesmo.');
+
+  if (isPostgres) {
+    // Check if relation already exists
+    const existing = await pool.query(
+      `SELECT * FROM friends WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)`,
+      [userId, target.id]
+    );
+
+    if (existing.rows.length > 0) {
+      const rel = existing.rows[0];
+      if (rel.status === 'accepted') throw new Error('Vocês já são amigos!');
+      throw new Error('Já existe um pedido de amizade pendente.');
+    }
+
+    const res = await pool.query(
+      `INSERT INTO friends (user_id, friend_id, status) VALUES ($1, $2, 'pending') RETURNING *`,
+      [userId, target.id]
+    );
+    return { ...res.rows[0], targetUser: target };
+  } else {
+    if (!memoryStore.friends) memoryStore.friends = [];
+    const exists = memoryStore.friends.some(
+      f => (f.user_id === userId && f.friend_id === target.id) || (f.user_id === target.id && f.friend_id === userId)
+    );
+    if (exists) throw new Error('Já existe um pedido de amizade ou vocês já são amigos.');
+    const rel = { id: Date.now(), user_id: userId, friend_id: target.id, status: 'pending', created_at: new Date() };
+    memoryStore.friends.push(rel);
+    return { ...rel, targetUser: target };
+  }
+}
+
+async function getFriends(userId) {
+  const currentId = parseInt(userId);
+  if (isPostgres) {
+    const res = await pool.query(
+      `SELECT f.id as friendship_id, f.status, f.created_at,
+              f.user_id as sender_id, f.friend_id as receiver_id,
+              u.id as user_id, u.username, u.display_name, u.avatar_url, u.status_mode, u.status_text
+       FROM friends f
+       JOIN users u ON (CASE WHEN f.user_id = $1 THEN f.friend_id ELSE f.user_id END) = u.id
+       WHERE f.user_id = $1 OR f.friend_id = $1
+       ORDER BY f.status ASC, u.display_name ASC`,
+      [currentId]
+    );
+
+    return res.rows.map(row => ({
+      friendshipId: row.friendship_id,
+      status: row.status,
+      isIncoming: row.status === 'pending' && row.receiver_id === currentId,
+      isOutgoing: row.status === 'pending' && row.sender_id === currentId,
+      user: {
+        id: row.user_id,
+        username: row.username,
+        display_name: row.display_name,
+        avatar_url: row.avatar_url,
+        status_mode: row.status_mode,
+        status_text: row.status_text
+      }
+    }));
+  } else {
+    if (!memoryStore.friends) memoryStore.friends = [];
+    return memoryStore.friends
+      .filter(f => f.user_id === currentId || f.friend_id === currentId)
+      .map(f => {
+        const otherId = f.user_id === currentId ? f.friend_id : f.user_id;
+        const otherUser = memoryStore.users.find(u => u.id === otherId) || {};
+        return {
+          friendshipId: f.id,
+          status: f.status,
+          isIncoming: f.status === 'pending' && f.friend_id === currentId,
+          isOutgoing: f.status === 'pending' && f.user_id === currentId,
+          user: {
+            id: otherUser.id || otherId,
+            username: otherUser.username || 'amigo',
+            display_name: otherUser.display_name || otherUser.username || 'Amigo',
+            avatar_url: otherUser.avatar_url || '',
+            status_mode: otherUser.status_mode || 'online',
+            status_text: otherUser.status_text || ''
+          }
+        };
+      });
+  }
+}
+
+async function acceptFriendRequest(userId, friendshipId) {
+  if (isPostgres) {
+    const res = await pool.query(
+      `UPDATE friends SET status = 'accepted' WHERE id = $1 AND friend_id = $2 RETURNING *`,
+      [friendshipId, userId]
+    );
+    return res.rows[0] || null;
+  } else {
+    if (!memoryStore.friends) return null;
+    const f = memoryStore.friends.find(x => x.id === parseInt(friendshipId) && x.friend_id === parseInt(userId));
+    if (f) f.status = 'accepted';
+    return f || null;
+  }
+}
+
+async function removeFriend(userId, friendshipId) {
+  if (isPostgres) {
+    await pool.query(
+      `DELETE FROM friends WHERE id = $1 AND (user_id = $2 OR friend_id = $2)`,
+      [friendshipId, userId]
+    );
+    return true;
+  } else {
+    if (!memoryStore.friends) return true;
+    memoryStore.friends = memoryStore.friends.filter(
+      x => !(x.id === parseInt(friendshipId) && (x.user_id === parseInt(userId) || x.friend_id === parseInt(userId)))
+    );
+    return true;
+  }
+}
+
+// Direct Messages
+async function getDirectMessages(userId1, userId2, limit = 60) {
+  const u1 = parseInt(userId1);
+  const u2 = parseInt(userId2);
+
+  if (isPostgres) {
+    const res = await pool.query(
+      `SELECT dm.*, u.username, u.display_name, u.avatar_url 
+       FROM direct_messages dm
+       JOIN users u ON u.id = dm.sender_id
+       WHERE (dm.sender_id = $1 AND dm.receiver_id = $2) 
+          OR (dm.sender_id = $2 AND dm.receiver_id = $1)
+       ORDER BY dm.created_at ASC
+       LIMIT $3`,
+      [u1, u2, limit]
+    );
+    return res.rows;
+  } else {
+    if (!memoryStore.direct_messages) memoryStore.direct_messages = [];
+    return memoryStore.direct_messages
+      .filter(m => (m.sender_id === u1 && m.receiver_id === u2) || (m.sender_id === u2 && m.receiver_id === u1))
+      .slice(-limit)
+      .map(m => {
+        const u = memoryStore.users.find(x => x.id === m.sender_id) || {};
+        return {
+          ...m,
+          username: u.username || 'amigo',
+          display_name: u.display_name || u.username || 'Amigo',
+          avatar_url: u.avatar_url || ''
+        };
+      });
+  }
+}
+
+async function createDirectMessage(senderId, receiverId, content, attachments = []) {
+  const sId = parseInt(senderId);
+  const rId = parseInt(receiverId);
+
+  if (isPostgres) {
+    const res = await pool.query(
+      `INSERT INTO direct_messages (sender_id, receiver_id, content, attachments) 
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [sId, rId, content, JSON.stringify(attachments)]
+    );
+    const dm = res.rows[0];
+    const u = await pool.query('SELECT username, display_name, avatar_url FROM users WHERE id = $1', [sId]);
+    return { ...dm, ...(u.rows[0] || {}) };
+  } else {
+    if (!memoryStore.direct_messages) memoryStore.direct_messages = [];
+    const dm = {
+      id: Date.now(),
+      sender_id: sId,
+      receiver_id: rId,
+      content,
+      attachments,
+      created_at: new Date()
+    };
+    memoryStore.direct_messages.push(dm);
+    const u = memoryStore.users.find(x => x.id === sId) || {};
+    return {
+      ...dm,
+      username: u.username || 'amigo',
+      display_name: u.display_name || u.username || 'Amigo',
+      avatar_url: u.avatar_url || ''
+    };
+  }
+}
+
 function getDatabaseStatus() {
   return {
     isPostgres,
@@ -489,5 +715,12 @@ module.exports = {
   getServerMembers,
   getChannelMessages,
   createMessage,
+  resetUserPassword,
+  sendFriendRequest,
+  getFriends,
+  acceptFriendRequest,
+  removeFriend,
+  getDirectMessages,
+  createDirectMessage,
   getDatabaseStatus
 };

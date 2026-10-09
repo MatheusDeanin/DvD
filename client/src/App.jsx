@@ -9,6 +9,9 @@ import { AuthModal } from './components/AuthModal';
 import { UserSettingsModal } from './components/UserSettingsModal';
 import { CreateServerModal } from './components/CreateServerModal';
 import { CreateChannelModal } from './components/CreateChannelModal';
+import { FriendsView } from './components/FriendsView';
+import { DirectMessageChat } from './components/DirectMessageChat';
+import { RemoteAudioListener } from './components/RemoteAudioListener';
 import { useWebRTC } from './hooks/useWebRTC';
 
 export default function App() {
@@ -24,6 +27,11 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [members, setMembers] = useState([]);
   const [typingUsers, setTypingUsers] = useState([]);
+
+  // Friends & Direct Messages
+  const [friends, setFriends] = useState([]);
+  const [activeDMUser, setActiveDMUser] = useState(null);
+  const [dmMessages, setDmMessages] = useState([]);
 
   // Modals & Panels
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -50,7 +58,6 @@ export default function App() {
         setCurrentUser(JSON.parse(savedUser));
       } catch (e) {}
 
-      // Verify token with backend
       fetch('/api/auth/me', {
         headers: { Authorization: `Bearer ${savedToken}` }
       })
@@ -97,6 +104,21 @@ export default function App() {
       });
     });
 
+    socket.on('new_dm', (newDm) => {
+      setDmMessages((prev) => {
+        if (prev.some((m) => m.id === newDm.id)) return prev;
+        return [...prev, newDm];
+      });
+    });
+
+    socket.on('friend_request_received', () => {
+      loadFriends();
+    });
+
+    socket.on('friend_request_accepted', () => {
+      loadFriends();
+    });
+
     socket.on('user_typing', ({ user }) => {
       setTypingUsers((prev) => {
         if (prev.some((u) => u.id === user.id)) return prev;
@@ -126,6 +148,9 @@ export default function App() {
       setMembers((prev) =>
         prev.map((m) => (m.id === userId ? { ...m, status_mode } : m))
       );
+      setFriends((prev) =>
+        prev.map((f) => (f.user?.id === userId ? { ...f, user: { ...f.user, status_mode } } : f))
+      );
     });
 
     return () => {
@@ -146,7 +171,19 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // 4. Fetch User's Servers
+  // 4. Fetch User's Servers & Friends
+  const loadFriends = () => {
+    if (!token) return;
+    fetch('/api/friends', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.friends) setFriends(data.friends);
+      })
+      .catch((err) => console.error('Erro ao carregar amigos:', err));
+  };
+
   useEffect(() => {
     if (!token) return;
 
@@ -163,11 +200,21 @@ export default function App() {
         }
       })
       .catch((err) => console.error('Erro ao carregar servidores:', err));
+
+    loadFriends();
   }, [token]);
 
   // 5. When activeServerId changes, fetch channels and members
   useEffect(() => {
-    if (!token || !activeServerId || activeServerId === 'home') return;
+    if (!token || !activeServerId || activeServerId === 'home') {
+      if (activeServerId === 'home') {
+        loadFriends();
+      }
+      return;
+    }
+
+    // Reset DM view when entering a server
+    setActiveDMUser(null);
 
     // Fetch channels
     fetch(`/api/servers/${activeServerId}/channels`, {
@@ -200,11 +247,10 @@ export default function App() {
 
   // 6. When activeChannelId changes, join socket channel room & fetch messages
   useEffect(() => {
-    if (!token || !activeChannelId) return;
+    if (!token || !activeChannelId || activeServerId === 'home') return;
 
     const currentChannel = channels.find((c) => String(c.id) === String(activeChannelId));
     if (currentChannel && currentChannel.type === 'voice') {
-      // Voice channel selected
       return;
     }
 
@@ -228,7 +274,21 @@ export default function App() {
         socketRef.current.emit('leave_channel', { channelId: activeChannelId });
       }
     };
-  }, [token, activeChannelId, channels]);
+  }, [token, activeChannelId, channels, activeServerId]);
+
+  // 7. When activeDMUser changes, fetch DMs
+  useEffect(() => {
+    if (!token || !activeDMUser) return;
+
+    fetch(`/api/dms/${activeDMUser.id}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.messages) setDmMessages(data.messages);
+      })
+      .catch((err) => console.error('Erro ao carregar mensagens diretas:', err));
+  }, [token, activeDMUser]);
 
   // Handlers
   const handleLoginSuccess = (user, jwtToken) => {
@@ -252,6 +312,58 @@ export default function App() {
       content,
       attachments
     });
+  };
+
+  const handleSendDM = async (content, attachments) => {
+    if (!token || !activeDMUser) return;
+    try {
+      const res = await fetch(`/api/dms/${activeDMUser.id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ content, attachments })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+    } catch (err) {
+      console.error('Erro ao enviar DM:', err);
+    }
+  };
+
+  const handleSendFriendRequest = async (username) => {
+    const res = await fetch('/api/friends/request', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ username })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Falha ao enviar pedido');
+    loadFriends();
+    return data;
+  };
+
+  const handleAcceptFriendRequest = async (friendshipId) => {
+    const res = await fetch(`/api/friends/${friendshipId}/accept`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) loadFriends();
+  };
+
+  const handleRemoveFriend = async (friendshipId) => {
+    const res = await fetch(`/api/friends/${friendshipId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.ok) {
+      loadFriends();
+      if (activeDMUser) setActiveDMUser(null);
+    }
   };
 
   const handleTyping = (isTyping) => {
@@ -344,20 +456,29 @@ export default function App() {
     );
   }
 
+  const isHome = activeServerId === 'home' || !activeServerId;
   const activeServer = servers.find((s) => String(s.id) === String(activeServerId));
   const activeChannel = channels.find((c) => String(c.id) === String(activeChannelId));
   const isViewingVoiceStage = activeChannel?.type === 'voice' || (voiceState.currentChannelId && activeChannelId === voiceState.currentChannelId);
 
   return (
     <div className="w-screen h-screen flex bg-discord-darkest overflow-hidden text-discord-text select-none">
-      {/* 1. Login / Register Modal if not authenticated */}
+      {/* Background persistent audio listener for all remote peers */}
+      <RemoteAudioListener peers={voiceState.peers} isDeafened={voiceState.isDeafened} />
+
+      {/* 1. Login / Register / Forgot Password Modal */}
       {!currentUser && <AuthModal onLoginSuccess={handleLoginSuccess} />}
 
       {/* 2. Leftmost Server Sidebar */}
       <ServerSidebar
         servers={servers}
         activeServerId={activeServerId}
-        onSelectServer={(id) => setActiveServerId(id)}
+        onSelectServer={(id) => {
+          setActiveServerId(id);
+          if (id === 'home') {
+            setActiveDMUser(null);
+          }
+        }}
         onOpenCreateServer={() => setShowCreateServerModal(true)}
         onOpenKeepAliveModal={() => setShowProfileModal(true)}
         keepAliveStatus={keepAliveStatus}
@@ -365,7 +486,7 @@ export default function App() {
 
       {/* 3. Channels and User Bar Sidebar */}
       <ChannelSidebar
-        activeServer={activeServer}
+        activeServer={isHome ? 'home' : activeServer}
         channels={channels}
         activeChannelId={activeChannelId}
         onSelectChannel={(chId) => setActiveChannelId(chId)}
@@ -383,9 +504,14 @@ export default function App() {
         onLeaveVoice={() => voiceState.leaveVoice()}
         onToggleMute={() => voiceState.toggleMute()}
         onToggleDeafen={() => voiceState.toggleDeafen()}
+        // Friends & DMs
+        friends={friends}
+        activeDMUserId={activeDMUser?.id}
+        onSelectDM={(friendUser) => setActiveDMUser(friendUser)}
+        onSelectFriendsTab={() => setActiveDMUser(null)}
       />
 
-      {/* 4. Main Stage / Chat Area */}
+      {/* 4. Main Stage / Chat / Friends Area */}
       {isViewingVoiceStage ? (
         <VoiceStage
           activeChannel={activeChannel}
@@ -397,6 +523,34 @@ export default function App() {
           onToggleCamera={() => voiceState.toggleCamera()}
           onToggleScreenShare={() => voiceState.toggleScreenShare()}
         />
+      ) : isHome ? (
+        activeDMUser ? (
+          <DirectMessageChat
+            friend={activeDMUser}
+            messages={dmMessages}
+            onSendMessage={handleSendDM}
+            onBackToFriends={() => setActiveDMUser(null)}
+            onStartVoiceCall={() => {
+              // Join general voice channel if available
+              const voiceCh = channels.find((c) => c.type === 'voice');
+              if (voiceCh) {
+                setActiveChannelId(voiceCh.id);
+                voiceState.joinVoice(voiceCh.id);
+              } else {
+                alert('Entre em um canal de voz para falar com seu amigo!');
+              }
+            }}
+            currentUser={currentUser}
+          />
+        ) : (
+          <FriendsView
+            friends={friends}
+            onSendFriendRequest={handleSendFriendRequest}
+            onAcceptRequest={handleAcceptFriendRequest}
+            onRemoveFriend={handleRemoveFriend}
+            onSelectDM={(friendUser) => setActiveDMUser(friendUser)}
+          />
+        )
       ) : (
         <ChatArea
           activeChannel={activeChannel}
@@ -411,7 +565,7 @@ export default function App() {
       )}
 
       {/* 5. Members List (Right Side) */}
-      {showMembers && !isViewingVoiceStage && (
+      {showMembers && !isViewingVoiceStage && !isHome && (
         <MemberList members={members} currentUserId={currentUser?.id} />
       )}
 

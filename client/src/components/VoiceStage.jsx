@@ -16,6 +16,7 @@ import {
 
 function PeerTile({ peer, isLocal, voiceState, currentUser }) {
   const videoRef = useRef(null);
+  const audioRef = useRef(null);
 
   const user = isLocal ? currentUser : peer.user;
   const isSpeaking = isLocal ? voiceState.isSpeaking : peer.isSpeaking;
@@ -24,10 +25,16 @@ function PeerTile({ peer, isLocal, voiceState, currentUser }) {
   const stream = isLocal ? voiceState.localStream : peer.stream;
 
   useEffect(() => {
-    if (videoRef.current && stream) {
+    if (videoRef.current && stream && isCameraOn) {
       videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(() => {});
     }
-  }, [stream, isCameraOn]);
+    if (audioRef.current && stream && !isLocal) {
+      audioRef.current.srcObject = stream;
+      audioRef.current.muted = voiceState.isDeafened;
+      audioRef.current.play().catch((e) => console.log('Peer audio play:', e));
+    }
+  }, [stream, isCameraOn, isLocal, voiceState.isDeafened]);
 
   return (
     <div
@@ -35,6 +42,16 @@ function PeerTile({ peer, isLocal, voiceState, currentUser }) {
         isSpeaking ? 'border-discord-green ring-2 ring-discord-green/50 shadow-lg shadow-discord-green/10' : 'border-white/5'
       }`}
     >
+      {/* Audio element for remote speech (always mounted so voice is audible) */}
+      {!isLocal && stream && (
+        <audio
+          ref={audioRef}
+          autoPlay
+          playsInline
+          muted={voiceState.isDeafened}
+        />
+      )}
+
       {/* Video stream if camera is on */}
       {isCameraOn && stream ? (
         <video
@@ -104,12 +121,13 @@ export function VoiceStage({
   const activeScreenShare = isLocalScreenSharing
     ? { isLocal: true, stream: voiceState.screenStream, user: currentUser }
     : peerSharing
-    ? { isLocal: false, stream: peerSharing.stream, user: peerSharing.user }
+    ? { isLocal: false, stream: peerSharing.screenStream || peerSharing.stream, user: peerSharing.user }
     : null;
 
   useEffect(() => {
     if (screenShareVideoRef.current && activeScreenShare?.stream) {
       screenShareVideoRef.current.srcObject = activeScreenShare.stream;
+      screenShareVideoRef.current.play().catch((err) => console.warn('Erro ao reproduzir tela:', err));
     }
   }, [activeScreenShare]);
 
