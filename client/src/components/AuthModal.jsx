@@ -63,8 +63,12 @@ export function AuthModal({ onLoginSuccess }) {
       <div className="relative w-full max-w-md bg-discord-dark rounded-xl shadow-2xl border border-white/5 overflow-hidden">
         {/* Banner header */}
         <div className="bg-gradient-to-r from-discord-blurple to-indigo-600 p-6 text-center text-white relative">
-          <div className="inline-flex p-3 rounded-2xl bg-white/10 backdrop-blur-md mb-2 shadow-inner">
-            <Sparkles className="w-8 h-8 text-white animate-pulse" />
+          <div className="inline-flex p-1.5 rounded-2xl bg-white/10 backdrop-blur-md mb-2 shadow-inner border border-white/10">
+            <img
+              src="/logo.jpg"
+              alt="DvD Logo"
+              className="w-16 h-16 object-contain rounded-xl shadow-md"
+            />
           </div>
           <h1 className="text-2xl font-black tracking-tight">DvD</h1>
           <p className="text-sm text-indigo-100 mt-1 font-medium">

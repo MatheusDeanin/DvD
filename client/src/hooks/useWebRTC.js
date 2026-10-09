@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { playJoinSound, playLeaveSound, playMuteSound } from '../utils/audio';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -194,6 +195,9 @@ export function useWebRTC(socket, currentUser) {
       localStreamRef.current = stream;
       setupVoiceActivityDetection(stream);
 
+      // Play join call chime
+      playJoinSound();
+
       // Tell server we joined
       if (socket) {
         socket.emit('join_voice', { channelId, user: currentUser });
@@ -205,6 +209,7 @@ export function useWebRTC(socket, currentUser) {
 
   // Leave Voice Channel
   const leaveVoice = useCallback(() => {
+    playLeaveSound();
     if (socket) {
       socket.emit('leave_voice');
     }
@@ -220,6 +225,7 @@ export function useWebRTC(socket, currentUser) {
         audioTrack.enabled = !audioTrack.enabled;
         const newMuteState = !audioTrack.enabled;
         setIsMuted(newMuteState);
+        playMuteSound(newMuteState);
         if (socket) {
           socket.emit('voice_state_change', { isMuted: newMuteState });
         }
@@ -364,6 +370,7 @@ export function useWebRTC(socket, currentUser) {
 
     // Another user joined
     const handleUserJoinedVoice = ({ participant }) => {
+      playJoinSound();
       setPeers((prev) => ({
         ...prev,
         [participant.socketId]: participant,
@@ -374,6 +381,7 @@ export function useWebRTC(socket, currentUser) {
 
     // User left voice
     const handleUserLeftVoice = ({ socketId }) => {
+      playLeaveSound();
       if (peerConnectionsRef.current[socketId]) {
         peerConnectionsRef.current[socketId].close();
         delete peerConnectionsRef.current[socketId];
