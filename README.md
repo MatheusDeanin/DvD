@@ -1,6 +1,6 @@
-# 🎮 Discord dos Amigos — 100% Grátis, Sem Censura & Anti-Sleep
+# 🎮 DvD — 100% Grátis, Sem Censura & Anti-Sleep
 
-Um clone completo do **Discord** criado especialmente para você jogar e conversar com até **10 amigos**, com **compartilhamento de tela**, **câmeras**, canais de **voz e texto**, **personalização de perfil**, banco de dados na nuvem **Neon PostgreSQL** e sistema **Anti-Sleep** automático para hospedagem gratuita no **Render**.
+O **DvD** é um aplicativo completo inspirado no Discord criado especialmente para você jogar e conversar com até **10 amigos**, com **compartilhamento de tela**, **câmeras**, canais de **voz e texto**, **personalização de perfil**, banco de dados na nuvem **Neon PostgreSQL** e sistema **Anti-Sleep** automático para hospedagem gratuita no **Render**.
 
 ---
 

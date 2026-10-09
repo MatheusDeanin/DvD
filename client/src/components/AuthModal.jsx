@@ -66,7 +66,7 @@ export function AuthModal({ onLoginSuccess }) {
           <div className="inline-flex p-3 rounded-2xl bg-white/10 backdrop-blur-md mb-2 shadow-inner">
             <Sparkles className="w-8 h-8 text-white animate-pulse" />
           </div>
-          <h1 className="text-2xl font-black tracking-tight">Discord dos Amigos</h1>
+          <h1 className="text-2xl font-black tracking-tight">DvD</h1>
           <p className="text-sm text-indigo-100 mt-1 font-medium">
             100% Grátis • Voz, Câmera e Compartilhamento de Tela
           </p>
@@ -187,7 +187,7 @@ export function AuthModal({ onLoginSuccess }) {
               </>
             ) : (
               <>
-                <LogIn className="w-4 h-4" /> Entrar no Discord
+                <LogIn className="w-4 h-4" /> Entrar no DvD
               </>
             )}
           </button>

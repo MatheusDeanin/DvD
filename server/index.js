@@ -306,7 +306,7 @@ async function start() {
 
   server.listen(PORT, () => {
     console.log(`\n======================================================`);
-    console.log(`🚀 DISCORD CLONE ONLINE NA PORTA: ${PORT}`);
+    console.log(`🚀 DvD ONLINE NA PORTA: ${PORT}`);
     console.log(`🔗 Local URL: http://localhost:${PORT}`);
     console.log(`🗄️  Banco: ${db.getDatabaseStatus().type}`);
     console.log(`======================================================\n`);

@@ -364,7 +364,7 @@ export function UserSettingsModal({
                   Sistema Anti-Sleep do Render (24/7 Grátis)
                 </h1>
                 <p className="text-sm text-discord-muted mt-1">
-                  O plano grátis do Render desliga a aplicação após 15 minutos sem visitas. Nosso sistema envia self-pings automáticos para garantir que o seu Discord fique acordado para você e seus 10 amigos jogarem a qualquer hora!
+                  O plano grátis do Render desliga a aplicação após 15 minutos sem visitas. Nosso sistema envia self-pings automáticos para garantir que o seu DvD fique acordado para você e seus 10 amigos jogarem a qualquer hora!
                 </p>
               </div>
 
