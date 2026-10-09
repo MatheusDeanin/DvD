@@ -1,13 +1,14 @@
 {
-  "name": "discord-clone-free",
+  "name": "dvd",
   "version": "1.0.0",
-  "description": "Discord Clone 100% Free - Voice, Screen Share, Neon Postgres & Render Deploy with Anti-Sleep",
+  "description": "DvD - 100% Free Discord Clone with Voice, Video, Screen Share, Neon Postgres & Render Anti-Sleep",
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
     "server": "node server/index.js",
-    "client": "npm run dev --prefix client",
+    "postinstall": "npm install --prefix client",
     "build": "npm run build --prefix client",
+    "client": "npm run dev --prefix client",
     "install:all": "npm install && npm install --prefix client",
     "dev": "node server/index.js"
   },
