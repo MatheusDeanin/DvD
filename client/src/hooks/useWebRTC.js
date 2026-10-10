@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { playJoinSound, playLeaveSound, playMuteSound } from '../utils/audio';
+import { playJoinSound, playLeaveSound, playMuteSound, playDeafenSound } from '../utils/audio';
 
 const ICE_SERVERS = {
   iceServers: [
@@ -57,7 +57,7 @@ export function useWebRTC(socket, currentUser) {
     setIsSpeaking(false);
   }, []);
 
-  // Voice Activity Detection (Speaking detection)
+  // Voice Activity Detection (Speaking detection with hysteresis and hold-time)
   const setupVoiceActivityDetection = useCallback((stream) => {
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -67,13 +67,17 @@ export function useWebRTC(socket, currentUser) {
       const analyser = audioCtx.createAnalyser();
       analyserRef.current = analyser;
       analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.4;
+      analyser.smoothingTimeConstant = 0.5;
 
       const source = audioCtx.createMediaStreamSource(stream);
       source.connect(analyser);
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       let speakingState = false;
+      let lastSpokeTime = 0;
+      const ATTACK_THRESHOLD = 20; // Volume to start speaking
+      const RELEASE_THRESHOLD = 12; // Volume to consider silence
+      const HOLD_TIME_MS = 350; // Hold time in ms to avoid flickering
 
       const checkVolume = () => {
         if (!analyserRef.current) return;
@@ -83,15 +87,27 @@ export function useWebRTC(socket, currentUser) {
           sum += dataArray[i];
         }
         const average = sum / dataArray.length;
-        const nowSpeaking = average > 18;
+        const now = Date.now();
 
-        if (nowSpeaking !== speakingState) {
-          speakingState = nowSpeaking;
-          setIsSpeaking(nowSpeaking);
-          if (socket) {
-            socket.emit('voice_state_change', { isSpeaking: nowSpeaking });
+        if (average > ATTACK_THRESHOLD) {
+          lastSpokeTime = now;
+          if (!speakingState) {
+            speakingState = true;
+            setIsSpeaking(true);
+            if (socket) {
+              socket.emit('voice_state_change', { isSpeaking: true });
+            }
+          }
+        } else if (speakingState && average < RELEASE_THRESHOLD) {
+          if (now - lastSpokeTime > HOLD_TIME_MS) {
+            speakingState = false;
+            setIsSpeaking(false);
+            if (socket) {
+              socket.emit('voice_state_change', { isSpeaking: false });
+            }
           }
         }
+
         animFrameRef.current = requestAnimationFrame(checkVolume);
       };
       checkVolume();
@@ -260,6 +276,7 @@ export function useWebRTC(socket, currentUser) {
   const toggleDeafen = useCallback(() => {
     setIsDeafened((prev) => {
       const next = !prev;
+      playDeafenSound(next);
       // If deafened, mute as well
       if (next && !isMuted) {
         toggleMute();
@@ -325,22 +342,41 @@ export function useWebRTC(socket, currentUser) {
     }
   }, [isCameraOn, socket]);
 
+  // Clean stop for screen share
+  const stopScreenSharing = useCallback(async () => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => {
+        try { track.stop(); } catch (e) {}
+        Object.values(peerConnectionsRef.current).forEach((pc) => {
+          try {
+            const sender = pc.getSenders().find((s) => s.track === track);
+            if (sender) pc.removeTrack(sender);
+          } catch (e) {}
+        });
+      });
+      screenStreamRef.current = null;
+    }
+    setIsScreenSharing(false);
+    if (socket) socket.emit('voice_state_change', { isScreenSharing: false });
+
+    // Renegotiate with all peers to cleanly remove screen stream
+    Object.entries(peerConnectionsRef.current).forEach(async ([targetSocketId, pc]) => {
+      try {
+        const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+        await pc.setLocalDescription(offer);
+        if (socket) {
+          socket.emit('webrtc_signal', { targetSocketId, signal: pc.localDescription });
+        }
+      } catch (err) {
+        console.warn('Erro ao renegociar encerramento de tela:', err);
+      }
+    });
+  }, [socket]);
+
   // Toggle Screen Share
   const toggleScreenShare = useCallback(async () => {
     if (isScreenSharing) {
-      // Stop sharing
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach((track) => {
-          track.stop();
-          Object.values(peerConnectionsRef.current).forEach((pc) => {
-            const sender = pc.getSenders().find((s) => s.track === track);
-            if (sender) pc.removeTrack(sender);
-          });
-        });
-        screenStreamRef.current = null;
-      }
-      setIsScreenSharing(false);
-      if (socket) socket.emit('voice_state_change', { isScreenSharing: false });
+      await stopScreenSharing();
     } else {
       // Start sharing
       try {
@@ -348,23 +384,18 @@ export function useWebRTC(socket, currentUser) {
           video: {
             cursor: 'always',
             displaySurface: 'monitor',
-            frameRate: { max: 60 },
+            frameRate: { max: 60, ideal: 30 },
+            width: { ideal: 1920, max: 2560 },
+            height: { ideal: 1080, max: 1440 },
           },
           audio: true, // system audio
         });
 
         screenStreamRef.current = screenStream;
 
-        const stopScreen = () => {
-          if (screenStreamRef.current) {
-            screenStreamRef.current.getTracks().forEach((track) => track.stop());
-            screenStreamRef.current = null;
-          }
-          setIsScreenSharing(false);
-          if (socket) socket.emit('voice_state_change', { isScreenSharing: false });
+        screenStream.getVideoTracks()[0].onended = () => {
+          stopScreenSharing();
         };
-
-        screenStream.getVideoTracks()[0].onended = stopScreen;
 
         setIsScreenSharing(true);
         if (socket) socket.emit('voice_state_change', { isScreenSharing: true });
@@ -372,7 +403,11 @@ export function useWebRTC(socket, currentUser) {
         // Add all screen tracks (video + optional audio) to peer connections
         screenStream.getTracks().forEach((track) => {
           Object.values(peerConnectionsRef.current).forEach((pc) => {
-            pc.addTrack(track, screenStream);
+            try {
+              pc.addTrack(track, screenStream);
+            } catch (e) {
+              console.warn('Erro ao anexar track de tela:', e);
+            }
           });
         });
 
@@ -392,7 +427,7 @@ export function useWebRTC(socket, currentUser) {
         console.error('Falha ao compartilhar tela:', err);
       }
     }
-  }, [isScreenSharing, socket]);
+  }, [isScreenSharing, socket, stopScreenSharing]);
 
   // Socket Events listener for WebRTC Signaling
   useEffect(() => {

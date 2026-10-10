@@ -96,3 +96,59 @@ export function playMuteSound(isMuted) {
     osc.stop(now + 0.09);
   } catch (e) {}
 }
+
+export function playDeafenSound(isDeafened) {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(isDeafened ? 520 : 340, now);
+    osc.frequency.exponentialRampToValueAtTime(isDeafened ? 260 : 680, now + 0.12);
+
+    gain.gain.setValueAtTime(0.18, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.13);
+  } catch (e) {}
+}
+
+export function playMessageSound() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    // Discord message pop chime (B5 -> E6)
+    [
+      { freq: 987.77, time: 0, duration: 0.08, gain: 0.12 },
+      { freq: 1318.51, time: 0.06, duration: 0.15, gain: 0.15 }
+    ].forEach(({ freq, time, duration, gain: maxGain }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + time);
+
+      gain.gain.setValueAtTime(0.001, now + time);
+      gain.gain.exponentialRampToValueAtTime(maxGain, now + time + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + time + duration);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now + time);
+      osc.stop(now + time + duration);
+    });
+  } catch (e) {}
+}

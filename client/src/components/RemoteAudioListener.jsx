@@ -5,7 +5,9 @@ function PeerAudioItem({ peer, isDeafened }) {
 
   useEffect(() => {
     if (audioRef.current && peer.stream) {
-      audioRef.current.srcObject = peer.stream;
+      if (audioRef.current.srcObject !== peer.stream) {
+        audioRef.current.srcObject = peer.stream;
+      }
       audioRef.current.muted = isDeafened;
       
       const playPromise = audioRef.current.play();

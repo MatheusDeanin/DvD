@@ -542,13 +542,27 @@ export default function App() {
             onSendMessage={handleSendDM}
             onBackToFriends={() => setActiveDMUser(null)}
             onStartVoiceCall={() => {
-              // Join general voice channel if available
               const voiceCh = channels.find((c) => c.type === 'voice');
               if (voiceCh) {
                 setActiveChannelId(voiceCh.id);
                 voiceState.joinVoice(voiceCh.id);
-              } else {
-                alert('Entre em um canal de voz para falar com seu amigo!');
+              } else if (servers.length > 0) {
+                fetch(`/api/servers/${servers[0].id}/channels`, {
+                  headers: { Authorization: `Bearer ${token}` }
+                })
+                  .then((res) => res.json())
+                  .then((data) => {
+                    const firstVoice = data.channels?.find((c) => c.type === 'voice');
+                    if (firstVoice) {
+                      setActiveServerId(servers[0].id);
+                      setChannels(data.channels);
+                      setActiveChannelId(firstVoice.id);
+                      voiceState.joinVoice(firstVoice.id);
+                    } else {
+                      alert('Crie um canal de voz no servidor para iniciar uma chamada!');
+                    }
+                  })
+                  .catch(() => alert('Não foi possível conectar à chamada.'));
               }
             }}
             currentUser={currentUser}

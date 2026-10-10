@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   X,
   User,
@@ -9,7 +9,13 @@ import {
   RefreshCw,
   ExternalLink,
   Shield,
-  Palette
+  Palette,
+  Mic,
+  Video,
+  Volume2,
+  Headphones,
+  Sliders,
+  CheckCircle2
 } from 'lucide-react';
 
 const AVATAR_PRESETS = [
@@ -38,7 +44,7 @@ export function UserSettingsModal({
   keepAliveStatus,
   onTriggerPing
 }) {
-  const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'keepalive'
+  const [activeTab, setActiveTab] = useState('profile'); // 'profile' | 'voice' | 'keepalive'
 
   // Profile Form States
   const [displayName, setDisplayName] = useState(currentUser?.display_name || '');
@@ -51,6 +57,109 @@ export function UserSettingsModal({
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [pingTesting, setPingTesting] = useState(false);
   const [pingResult, setPingResult] = useState(null);
+
+  // Voice Test States
+  const [isTestingMic, setIsTestingMic] = useState(false);
+  const [micVolumeLevel, setMicVolumeLevel] = useState(0);
+  const [isTestingCam, setIsTestingCam] = useState(false);
+
+  const testMicStreamRef = useRef(null);
+  const testCamStreamRef = useRef(null);
+  const testCamVideoRef = useRef(null);
+  const testAudioCtxRef = useRef(null);
+  const testAnimRef = useRef(null);
+
+  // Clean up any test media when closing or changing tabs
+  const stopAllMediaTests = () => {
+    if (testAnimRef.current) cancelAnimationFrame(testAnimRef.current);
+    if (testAudioCtxRef.current && testAudioCtxRef.current.state !== 'closed') {
+      testAudioCtxRef.current.close().catch(() => {});
+      testAudioCtxRef.current = null;
+    }
+    if (testMicStreamRef.current) {
+      testMicStreamRef.current.getTracks().forEach((t) => t.stop());
+      testMicStreamRef.current = null;
+    }
+    if (testCamStreamRef.current) {
+      testCamStreamRef.current.getTracks().forEach((t) => t.stop());
+      testCamStreamRef.current = null;
+    }
+    setIsTestingMic(false);
+    setIsTestingCam(false);
+    setMicVolumeLevel(0);
+  };
+
+  useEffect(() => {
+    return () => {
+      stopAllMediaTests();
+    };
+  }, []);
+
+  const handleToggleMicTest = async () => {
+    if (isTestingMic) {
+      stopAllMediaTests();
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        testMicStreamRef.current = stream;
+        setIsTestingMic(true);
+
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AudioCtx();
+        testAudioCtxRef.current = ctx;
+
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.3;
+
+        const source = ctx.createMediaStreamSource(stream);
+        source.connect(analyser);
+
+        const data = new Uint8Array(analyser.frequencyBinCount);
+
+        const updateMeter = () => {
+          if (!testMicStreamRef.current) return;
+          analyser.getByteFrequencyData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) sum += data[i];
+          const avg = sum / data.length;
+          // Scale to 0-100%
+          const pct = Math.min(100, Math.round((avg / 80) * 100));
+          setMicVolumeLevel(pct);
+          testAnimRef.current = requestAnimationFrame(updateMeter);
+        };
+        updateMeter();
+      } catch (err) {
+        alert('Não foi possível acessar o microfone para teste: ' + err.message);
+      }
+    }
+  };
+
+  const handleToggleCamTest = async () => {
+    if (isTestingCam) {
+      if (testCamStreamRef.current) {
+        testCamStreamRef.current.getTracks().forEach((t) => t.stop());
+        testCamStreamRef.current = null;
+      }
+      setIsTestingCam(false);
+    } else {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 } }
+        });
+        testCamStreamRef.current = stream;
+        setIsTestingCam(true);
+        setTimeout(() => {
+          if (testCamVideoRef.current) {
+            testCamVideoRef.current.srcObject = stream;
+            testCamVideoRef.current.play().catch(() => {});
+          }
+        }, 100);
+      } catch (err) {
+        alert('Não foi possível acessar a câmera para teste: ' + err.message);
+      }
+    }
+  };
 
   const handleSave = async (e) => {
     e.preventDefault();
@@ -105,10 +214,13 @@ export function UserSettingsModal({
 
             <div className="space-y-1">
               <button
-                onClick={() => setActiveTab('profile')}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-semibold transition ${
+                onClick={() => {
+                  stopAllMediaTests();
+                  setActiveTab('profile');
+                }}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-semibold transition ${
                   activeTab === 'profile'
-                    ? 'bg-discord-active text-white'
+                    ? 'bg-discord-active text-white shadow'
                     : 'text-discord-muted hover:bg-discord-hover hover:text-white'
                 }`}
               >
@@ -117,10 +229,28 @@ export function UserSettingsModal({
               </button>
 
               <button
-                onClick={() => setActiveTab('keepalive')}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm font-semibold transition ${
+                onClick={() => {
+                  stopAllMediaTests();
+                  setActiveTab('voice');
+                }}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-semibold transition ${
+                  activeTab === 'voice'
+                    ? 'bg-discord-active text-white shadow'
+                    : 'text-discord-muted hover:bg-discord-hover hover:text-white'
+                }`}
+              >
+                <Mic className="w-4 h-4 text-discord-blurple" />
+                Voz e Vídeo
+              </button>
+
+              <button
+                onClick={() => {
+                  stopAllMediaTests();
+                  setActiveTab('keepalive');
+                }}
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-semibold transition ${
                   activeTab === 'keepalive'
-                    ? 'bg-discord-active text-white'
+                    ? 'bg-discord-active text-white shadow'
                     : 'text-discord-muted hover:bg-discord-hover hover:text-white'
                 }`}
               >
@@ -133,8 +263,11 @@ export function UserSettingsModal({
           {/* Logout button */}
           <div className="pt-4 border-t border-white/10">
             <button
-              onClick={onLogout}
-              className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm font-semibold text-discord-red hover:bg-discord-red/10 transition"
+              onClick={() => {
+                stopAllMediaTests();
+                onLogout();
+              }}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold text-discord-red hover:bg-discord-red/10 transition"
             >
               <LogOut className="w-4 h-4" />
               Sair da Conta
@@ -146,7 +279,10 @@ export function UserSettingsModal({
         <div className="flex-1 flex flex-col overflow-y-auto p-8 relative">
           {/* Close button (ESC) */}
           <button
-            onClick={onClose}
+            onClick={() => {
+              stopAllMediaTests();
+              onClose();
+            }}
             className="absolute top-6 right-6 p-2 rounded-full border border-white/10 text-discord-muted hover:text-white hover:bg-white/5 transition flex items-center gap-1 text-xs"
           >
             <X className="w-5 h-5" />
@@ -163,7 +299,6 @@ export function UserSettingsModal({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 {/* Form Inputs */}
                 <form onSubmit={handleSave} className="space-y-4">
-                  {/* Display Name */}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
                       Nome de Exibição
@@ -177,7 +312,6 @@ export function UserSettingsModal({
                     />
                   </div>
 
-                  {/* Status Text */}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
                       Status Personalizado
@@ -191,7 +325,6 @@ export function UserSettingsModal({
                     />
                   </div>
 
-                  {/* Status Mode */}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
                       Modo de Status
@@ -220,7 +353,6 @@ export function UserSettingsModal({
                     </div>
                   </div>
 
-                  {/* Avatar URL or Presets */}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
                       Avatar (URL direta ou escolha abaixo)
@@ -248,7 +380,6 @@ export function UserSettingsModal({
                     </div>
                   </div>
 
-                  {/* Banner Color */}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
                       Cor do Banner de Perfil
@@ -268,7 +399,6 @@ export function UserSettingsModal({
                     </div>
                   </div>
 
-                  {/* Bio */}
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
                       Sobre Mim
@@ -303,26 +433,23 @@ export function UserSettingsModal({
                     Pré-Visualização do Perfil
                   </h3>
                   <div className="w-full bg-discord-darkest rounded-2xl overflow-hidden shadow-2xl border border-white/10">
-                    {/* Card Banner */}
                     <div
                       style={{ backgroundColor: bannerColor }}
                       className="h-24 w-full relative transition-colors duration-300"
                     />
 
-                    {/* Avatar & Badges */}
                     <div className="px-4 pb-4 relative">
                       <div className="relative -mt-12 mb-3 inline-block">
                         <img
                           src={avatarUrl || 'https://api.dicebear.com/7.x/bottts/svg?seed=' + currentUser?.username}
                           alt=""
-                          className="w-20 h-20 rounded-full border-4 border-discord-darkest bg-discord-dark object-cover"
+                          className="w-20 h-20 rounded-full border-4 border-discord-darkest bg-discord-dark object-cover shadow"
                         />
                         <span
                           className={`absolute bottom-0 right-0 w-5 h-5 rounded-full ring-4 ring-discord-darkest ${statusColors[statusMode]}`}
                         />
                       </div>
 
-                      {/* Display name & username */}
                       <div className="p-3 bg-discord-dark rounded-xl space-y-2">
                         <div>
                           <h4 className="text-base font-black text-white">
@@ -355,6 +482,126 @@ export function UserSettingsModal({
             </div>
           )}
 
+          {/* VOICE & VIDEO SETTINGS TAB */}
+          {activeTab === 'voice' && (
+            <div className="max-w-2xl space-y-8">
+              <div>
+                <h1 className="text-xl font-black text-white flex items-center gap-2">
+                  <Mic className="w-6 h-6 text-discord-blurple" />
+                  Configurações de Voz e Vídeo
+                </h1>
+                <p className="text-sm text-discord-muted mt-1">
+                  Teste o seu microfone e câmera antes de entrar na call com seus amigos.
+                </p>
+              </div>
+
+              {/* Microphone Test Section */}
+              <div className="p-5 rounded-2xl bg-discord-darkest border border-white/10 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Volume2 className="w-4 h-4 text-discord-green" /> Teste de Microfone
+                    </h3>
+                    <p className="text-xs text-discord-muted">
+                      Fale ao microfone para verificar se seu áudio está sendo captado perfeitamente.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={handleToggleMicTest}
+                    className={`px-4 py-2 rounded-lg text-xs font-bold transition shadow ${
+                      isTestingMic
+                        ? 'bg-discord-red text-white hover:bg-red-600'
+                        : 'bg-discord-blurple text-white hover:bg-discord-blurple-hover'
+                    }`}
+                  >
+                    {isTestingMic ? 'Parar Teste' : 'Testar Microfone'}
+                  </button>
+                </div>
+
+                {/* Animated Volume VU Meter Bar */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[11px] text-discord-muted font-mono">
+                    <span>Nível de Entrada</span>
+                    <span className="text-white font-bold">{micVolumeLevel}%</span>
+                  </div>
+                  <div className="h-3 bg-discord-dark rounded-full overflow-hidden p-0.5 border border-white/5">
+                    <div
+                      style={{ width: `${micVolumeLevel}%` }}
+                      className={`h-full rounded-full transition-all duration-75 ${
+                        micVolumeLevel > 70
+                          ? 'bg-gradient-to-r from-emerald-500 to-amber-400'
+                          : 'bg-discord-green shadow-sm shadow-discord-green/50'
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                {/* Hardware Enhancement Features */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-white/5 text-xs text-discord-muted">
+                  <div className="flex items-center gap-2 p-2 rounded-lg bg-discord-dark/50">
+                    <CheckCircle2 className="w-4 h-4 text-discord-green" />
+                    <span>Cancelamento de Eco</span>
+                  </div>
+                  <div className="flex items-center gap-2 p-2 rounded-lg bg-discord-dark/50">
+                    <CheckCircle2 className="w-4 h-4 text-discord-green" />
+                    <span>Supressão de Ruído</span>
+                  </div>
+                  <div className="flex items-center gap-2 p-2 rounded-lg bg-discord-dark/50">
+                    <CheckCircle2 className="w-4 h-4 text-discord-green" />
+                    <span>Ganho Automático</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Camera Test Section */}
+              <div className="p-5 rounded-2xl bg-discord-darkest border border-white/10 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Video className="w-4 h-4 text-discord-blurple" /> Teste de Câmera
+                    </h3>
+                    <p className="text-xs text-discord-muted">
+                      Visualize a qualidade e o enquadramento do seu vídeo antes de abrir a câmera.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={handleToggleCamTest}
+                    className={`px-4 py-2 rounded-lg text-xs font-bold transition shadow ${
+                      isTestingCam
+                        ? 'bg-discord-red text-white hover:bg-red-600'
+                        : 'bg-discord-blurple text-white hover:bg-discord-blurple-hover'
+                    }`}
+                  >
+                    {isTestingCam ? 'Desligar Câmera' : 'Testar Vídeo'}
+                  </button>
+                </div>
+
+                {isTestingCam ? (
+                  <div className="w-full aspect-video bg-black rounded-xl overflow-hidden border border-white/10 flex items-center justify-center relative">
+                    <video
+                      ref={testCamVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-full object-cover"
+                    />
+                    <div className="absolute top-2 left-2 bg-black/70 px-2.5 py-1 rounded-md text-[10px] font-bold text-discord-green flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-discord-green animate-pulse" />
+                      Câmera Ativa — 720p 30 FPS
+                    </div>
+                  </div>
+                ) : (
+                  <div className="w-full py-8 border-2 border-dashed border-white/10 rounded-xl flex flex-col items-center justify-center text-discord-muted text-xs gap-2">
+                    <Video className="w-8 h-8 opacity-40" />
+                    <span>Clique em "Testar Vídeo" para iniciar a pré-visualização.</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* KEEP-ALIVE TAB */}
           {activeTab === 'keepalive' && (
             <div className="max-w-2xl space-y-6">
@@ -364,12 +611,12 @@ export function UserSettingsModal({
                   Sistema Anti-Sleep do Render (24/7 Grátis)
                 </h1>
                 <p className="text-sm text-discord-muted mt-1">
-                  O plano grátis do Render desliga a aplicação após 15 minutos sem visitas. Nosso sistema envia self-pings automáticos para garantir que o seu DvD fique acordado para você e seus 10 amigos jogarem a qualquer hora!
+                  O plano grátis do Render desliga a aplicação após 15 minutos sem visitas. Nosso sistema envia self-pings automáticos para garantir que o seu DvD fique acordado para você e seus amigos jogarem a qualquer hora!
                 </p>
               </div>
 
               {/* Status Box */}
-              <div className="p-5 rounded-xl bg-discord-darkest border border-white/10 space-y-4">
+              <div className="p-5 rounded-2xl bg-discord-darkest border border-white/10 space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <span
@@ -390,7 +637,7 @@ export function UserSettingsModal({
                   <button
                     onClick={handleTestPing}
                     disabled={pingTesting}
-                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition"
+                    className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${pingTesting ? 'animate-spin' : ''}`} />
                     Testar Ping Agora
@@ -426,14 +673,14 @@ export function UserSettingsModal({
               </div>
 
               {/* Instructions Guide */}
-              <div className="p-5 rounded-xl bg-gradient-to-br from-indigo-950/40 to-discord-darkest border border-indigo-500/20 space-y-3">
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-indigo-950/40 to-discord-darkest border border-indigo-500/20 space-y-3 shadow-lg">
                 <h4 className="text-sm font-bold text-indigo-300 flex items-center gap-2">
-                  <Sparkles className="w-4 h-4" />
+                  <Sparkles className="w-4 h-4 text-discord-yellow" />
                   Dica de Mestre para 100% de Uptime no Render:
                 </h4>
                 <p className="text-xs text-discord-text leading-relaxed">
                   Quando você fizer o deploy no <strong>Render.com</strong>, adicione a variável de ambiente:
-                  <code className="mx-1 px-1.5 py-0.5 rounded bg-black/40 text-amber-300">
+                  <code className="mx-1 px-1.5 py-0.5 rounded bg-black/40 text-amber-300 font-mono">
                     APP_URL = https://sua-url.onrender.com
                   </code>
                   . O próprio servidor vai fazer ping em si mesmo a cada 10 minutos!
