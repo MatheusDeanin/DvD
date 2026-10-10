@@ -206,16 +206,17 @@ function securityHeaders() {
       useDefaults: false,
       directives: {
         'default-src': ["'self'"],
-        'script-src': ["'self'"],
+        'script-src': ["'self'", "https://apis.google.com", "https://www.gstatic.com"],
         'style-src': ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-        'img-src': ["'self'", 'data:', 'blob:'],
+        'img-src': ["'self'", 'data:', 'blob:', "https://www.gstatic.com"],
         'font-src': ["'self'", 'data:', "https://fonts.gstatic.com"],
-        'connect-src': ["'self'", 'ws:', 'wss:'],
+        'connect-src': ["'self'", 'ws:', 'wss:', "https://identitytoolkit.googleapis.com", "https://securetoken.googleapis.com"],
         'media-src': ["'self'", 'blob:', 'mediastream:'],
         'object-src': ["'none'"],
         'base-uri': ["'self'"],
         'form-action': ["'self'"],
         'frame-ancestors': ["'none'"],
+        'frame-src': ["'self'", "https://dvd-app-45586.firebaseapp.com"],
         'worker-src': ["'self'", 'blob:']
       }
     },
