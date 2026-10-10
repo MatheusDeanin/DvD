@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { LogIn, UserPlus, Database, Shield, Zap, Sparkles, KeyRound, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { LogIn, UserPlus, Database, Shield, Zap, Sparkles, KeyRound, ArrowLeft, CheckCircle2, Download, Copy } from 'lucide-react';
 
 export function AuthModal({ onLoginSuccess }) {
   const [mode, setMode] = useState('login'); // 'login' | 'register' | 'forgot'
@@ -11,6 +11,8 @@ export function AuthModal({ onLoginSuccess }) {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  const [recoveryCodes, setRecoveryCodes] = useState(null);
+  const [pendingAuth, setPendingAuth] = useState(null);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -61,10 +63,11 @@ export function AuthModal({ onLoginSuccess }) {
       localStorage.setItem('discord_user', JSON.stringify(data.user));
 
       if (mode === 'register' && data.recoveryCodes) {
-        alert(`IMPORTANTE! Guarde seus códigos de recuperação em um local seguro. Eles são a única forma de recuperar sua conta se você esquecer a senha:\n\n${data.recoveryCodes.join('\n')}`);
+        setRecoveryCodes(data.recoveryCodes);
+        setPendingAuth({ user: data.user, token: data.token });
+      } else {
+        onLoginSuccess(data.user, data.token);
       }
-
-      onLoginSuccess(data.user, data.token);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -111,8 +114,82 @@ export function AuthModal({ onLoginSuccess }) {
           </div>
         </div>
 
-        {/* Tab switcher */}
-        {mode !== 'forgot' ? (
+        {/* Form Body or Recovery Codes */}
+        {recoveryCodes ? (
+          <div className="p-6 space-y-4">
+            <div className="text-center mb-4">
+              <h2 className="text-xl font-bold text-white mb-2">Códigos de Recuperação</h2>
+              <p className="text-sm text-discord-muted">
+                Guarde estes códigos em um lugar seguro. Eles são a única forma de acessar sua conta caso você perca sua senha. Cada código só pode ser usado uma vez.
+              </p>
+            </div>
+
+            <div className="bg-discord-darkest rounded-xl p-4 border border-white/5 shadow-inner">
+              <div className="grid grid-cols-2 gap-3 text-center">
+                {recoveryCodes.map((code, idx) => (
+                  <div key={idx} className="font-mono text-sm text-discord-green font-bold bg-black/30 py-2 rounded">
+                    {code}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(recoveryCodes.join('\n'));
+                  setSuccessMsg('Códigos copiados para a área de transferência!');
+                  setTimeout(() => setSuccessMsg(''), 3000);
+                }}
+                className="flex-1 py-2.5 rounded-lg bg-discord-darkest hover:bg-discord-darkest/80 text-white text-xs font-semibold flex items-center justify-center gap-2 transition border border-white/10"
+              >
+                <Copy className="w-4 h-4" /> Copiar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const blob = new Blob([`CÓDIGOS DE RECUPERAÇÃO - DVD\n\nGuarde em um lugar seguro!\n\n${recoveryCodes.join('\n')}`], { type: 'text/plain' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `dvd_recovery_codes_${pendingAuth?.user?.username || 'user'}.txt`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                }}
+                className="flex-1 py-2.5 rounded-lg bg-discord-darkest hover:bg-discord-darkest/80 text-white text-xs font-semibold flex items-center justify-center gap-2 transition border border-white/10"
+              >
+                <Download className="w-4 h-4" /> Baixar .txt
+              </button>
+            </div>
+
+            {successMsg && (
+              <div className="p-3 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-medium flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                <span>{successMsg}</span>
+              </div>
+            )}
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (pendingAuth) {
+                    onLoginSuccess(pendingAuth.user, pendingAuth.token);
+                  }
+                }}
+                className="w-full py-3 px-4 rounded-lg bg-discord-blurple hover:bg-discord-blurple-hover font-semibold text-white text-sm transition-all shadow-lg"
+              >
+                Entendi, já guardei com segurança
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Tab switcher */}
+            {mode !== 'forgot' ? (
           <div className="flex border-b border-discord-darkest bg-discord-darkest/40">
             <button
               type="button"
@@ -323,6 +400,8 @@ export function AuthModal({ onLoginSuccess }) {
             </div>
           )}
         </form>
+          </>
+        )}
       </div>
     </div>
   );
