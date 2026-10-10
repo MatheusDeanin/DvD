@@ -74,7 +74,14 @@ export function AuthModal({ onLoginSuccess }) {
       await handleFirebaseBackendSync(userCred, mode === 'register');
     } catch (err) {
       console.error(err);
-      setError('Falha ao entrar com o Google.');
+      if (err.code === 'auth/popup-closed-by-user') {
+        // Usuário fechou o popup ou o navegador bloqueou
+        setError('A janela do Google foi fechada antes de concluir o login. Se estiver usando o navegador Brave ou bloqueador de anúncios, desative a proteção para este site.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setError('Domínio não autorizado no Firebase. Adicione o link do Render em Domínios Autorizados no painel do Firebase.');
+      } else {
+        setError(err.message || 'Falha ao entrar com o Google.');
+      }
     } finally {
       setLoading(false);
     }
