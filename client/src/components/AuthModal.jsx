@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { LogIn, UserPlus, Database, Shield, Zap, Sparkles, KeyRound, ArrowLeft, CheckCircle2, Download, Copy } from 'lucide-react';
 import { auth } from '../firebase';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider } from 'firebase/auth';
 
 export function AuthModal({ onLoginSuccess }) {
   const [mode, setMode] = useState('login'); // 'login' | 'register' | 'forgot'
@@ -65,18 +65,38 @@ export function AuthModal({ onLoginSuccess }) {
     }
   };
 
+  useEffect(() => {
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result && result.user) {
+          handleFirebaseBackendSync(result, false, true);
+        }
+      })
+      .catch((err) => {
+        console.error('Erro no redirect login:', err);
+      });
+  }, []);
+
   const handleGoogleLogin = async () => {
     try {
       setError('');
       setLoading(true);
       const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
       const userCred = await signInWithPopup(auth, provider);
       await handleFirebaseBackendSync(userCred, mode === 'register', true);
     } catch (err) {
       console.error(err);
-      if (err.code === 'auth/popup-closed-by-user') {
-        // Usuário fechou o popup ou o navegador bloqueou
-        setError('A janela do Google foi fechada antes de concluir o login. Se estiver usando o navegador Brave ou bloqueador de anúncios, desative a proteção para este site.');
+      if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/popup-blocked') {
+        // Se popup foi fechado/bloqueado pelo Brave ou outro navegador, tenta redirect direto
+        try {
+          const provider = new GoogleAuthProvider();
+          provider.setCustomParameters({ prompt: 'select_account' });
+          await signInWithRedirect(auth, provider);
+          return;
+        } catch (redirErr) {
+          setError('A janela do Google foi fechada antes de concluir o login. Se estiver usando o navegador Brave, desative os escudos ou entre com E-mail e Senha.');
+        }
       } else if (err.code === 'auth/unauthorized-domain') {
         setError('Domínio não autorizado no Firebase. Adicione o link do Render em Domínios Autorizados no painel do Firebase.');
       } else {

@@ -164,13 +164,13 @@ function createApp() {
 
     const { uid, email, name, picture } = decoded;
 
-    let user = await db.pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]).then(r => r.rows[0]);
+    let user = await db.getUserByFirebaseUid(uid);
     
     // Fallback pra email caso já exista conta com esse email
     if (!user && email) {
-      user = await db.pool.query('SELECT * FROM users WHERE email = $1', [email]).then(r => r.rows[0]);
+      user = await db.getUserByEmail(email);
       if (user) {
-        await db.pool.query('UPDATE users SET firebase_uid = $1 WHERE id = $2', [uid, user.id]);
+        await db.linkFirebaseUid(user.id, uid, email, picture);
       }
     }
 
@@ -189,17 +189,16 @@ function createApp() {
       
       const pass = await bcrypt.hash(Math.random().toString(), 1); // senha dummy, ele usa Firebase agora
       
-      user = await db.createUser({
+      const created = await db.createUser({
         username,
         passwordHash: pass,
         displayName: name || username,
         consentVersion: cfg.CONSENT_VERSION
       });
-      await db.pool.query('UPDATE users SET firebase_uid = $1, email = $2, avatar_url = $3 WHERE id = $4', [uid, email, picture, user.id]);
-      user = await db.getUserById(user.id);
+      await db.linkFirebaseUid(created.id, uid, email, picture);
+      user = await db.getUserById(created.id);
     } else if (acceptTerms === true && user.consent_version !== cfg.CONSENT_VERSION) {
-      // Atualizar consentimento se mandou
-      await db.pool.query('UPDATE users SET consent_version = $1, consent_at = CURRENT_TIMESTAMP WHERE id = $2', [cfg.CONSENT_VERSION, user.id]);
+      await db.registerConsent(user.id, cfg.CONSENT_VERSION);
       user.consent_version = cfg.CONSENT_VERSION;
     }
 

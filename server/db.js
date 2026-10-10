@@ -228,6 +228,23 @@ const getAuthUser = (id) => one('SELECT id, username, token_version FROM users W
 const getUserByFriendCode = (code) => one(`SELECT ${PUBLIC_USER_COLS} FROM users WHERE friend_code = $1`, [code]);
 const getUserByUsername = (username) =>
   one(`SELECT ${PUBLIC_USER_COLS} FROM users WHERE LOWER(username) = LOWER($1)`, [username]);
+const getUserByFirebaseUid = (uid) => one('SELECT * FROM users WHERE firebase_uid = $1', [uid]);
+const getUserByEmail = (email) => one('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+
+async function linkFirebaseUid(userId, uid, email, avatarUrl) {
+  const sets = ['firebase_uid = $1'];
+  const vals = [uid];
+  if (email) {
+    vals.push(email);
+    sets.push(`email = $${vals.length}`);
+  }
+  if (avatarUrl) {
+    vals.push(avatarUrl);
+    sets.push(`avatar_url = $${vals.length}`);
+  }
+  vals.push(userId);
+  await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
+}
 
 async function createUser({ username, passwordHash, displayName, consentVersion }) {
   const user = await one(
@@ -610,6 +627,9 @@ module.exports = {
   getAuthUser,
   getUserByFriendCode,
   getUserByUsername,
+  getUserByFirebaseUid,
+  getUserByEmail,
+  linkFirebaseUid,
   createUser,
   updateUserProfile,
   registerConsent,
