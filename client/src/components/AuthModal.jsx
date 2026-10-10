@@ -41,7 +41,7 @@ export function AuthModal({ onLoginSuccess }) {
 
     const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
     const payload = mode === 'register'
-      ? { username, email, password, displayName: displayName || username, consentLGPD: document.getElementById('consentLGPD')?.checked }
+      ? { username, email, password, displayName: displayName || username, acceptTerms: document.getElementById('consentLGPD')?.checked }
       : { login: email || username, password };
 
     try {
