@@ -198,18 +198,21 @@ export default function App() {
     }
   }, [incomingCall]);
 
-  // 3. Fetch Keep-Alive status periodically
+  // 3. Fetch Keep-Alive status periodically (apenas quando logado)
   useEffect(() => {
+    if (!token) return;
     const fetchStatus = () => {
-      fetch('/api/keep-alive/status')
-        .then((res) => res.json())
-        .then((data) => setKeepAliveStatus(data))
+      fetch('/api/keep-alive/status', {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => { if (data) setKeepAliveStatus(data); })
         .catch(() => {});
     };
     fetchStatus();
     const interval = setInterval(fetchStatus, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [token]);
 
   // 4. Fetch User's Servers & Friends
   const loadFriends = () => {
@@ -482,7 +485,11 @@ export default function App() {
   };
 
   const handleTriggerPing = async () => {
-    const res = await fetch('/api/keep-alive/trigger', { method: 'POST' });
+    if (!token) return;
+    const res = await fetch('/api/keep-alive/trigger', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    });
     const data = await res.json();
     if (data.status) setKeepAliveStatus(data.status);
     return data;
