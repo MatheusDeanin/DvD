@@ -5,15 +5,16 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const { Server } = require('socket.io');
-const admin = require('firebase-admin');
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getAuth } = require('firebase-admin/auth');
 const cfg = require('./config');
 
 const adminConfig = { projectId: 'dvd-app-45586' };
 if (cfg.FIREBASE_CREDENTIALS) {
-  adminConfig.credential = admin.credential.cert(cfg.FIREBASE_CREDENTIALS);
+  adminConfig.credential = cert(cfg.FIREBASE_CREDENTIALS);
 }
 
-admin.initializeApp(adminConfig);
+initializeApp(adminConfig);
 const sec = require('./security');
 const db = require('./db');
 const presence = require('./presence');
@@ -156,7 +157,7 @@ function createApp() {
 
     let decoded;
     try {
-      decoded = await admin.auth().verifyIdToken(token);
+      decoded = await getAuth().verifyIdToken(token);
     } catch (err) {
       throw new HttpError(401, 'Token Firebase inválido.');
     }
