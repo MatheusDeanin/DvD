@@ -5,6 +5,11 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const { Server } = require('socket.io');
+const admin = require('firebase-admin');
+
+admin.initializeApp({
+  projectId: 'dvd-app-45586'
+});
 
 const cfg = require('./config');
 const sec = require('./security');
@@ -143,6 +148,65 @@ function createApp() {
   }));
 
   // ------------------------------------------------------------------ AUTH
+  app.post('/api/auth/firebase', limiters.login, asyncHandler(async (req, res) => {
+    const { token, acceptTerms } = bodyOf(req);
+    if (!token) throw new HttpError(400, 'Token Firebase ausente.');
+
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(token);
+    } catch (err) {
+      throw new HttpError(401, 'Token Firebase inválido.');
+    }
+
+    const { uid, email, name, picture } = decoded;
+
+    let user = await db.pool.query('SELECT * FROM users WHERE firebase_uid = $1', [uid]).then(r => r.rows[0]);
+    
+    // Fallback pra email caso já exista conta com esse email
+    if (!user && email) {
+      user = await db.pool.query('SELECT * FROM users WHERE email = $1', [email]).then(r => r.rows[0]);
+      if (user) {
+        await db.pool.query('UPDATE users SET firebase_uid = $1 WHERE id = $2', [uid, user.id]);
+      }
+    }
+
+    if (!user) {
+      if (acceptTerms !== true) {
+        throw new HttpError(400, 'É necessário aceitar os Termos de Uso e a Política de Privacidade (LGPD).');
+      }
+      // Criar nova conta baseada no Firebase
+      const baseName = (name || email?.split('@')[0] || 'user').toLowerCase().replace(/[^a-z0-9_.]/g, '').slice(0, 15);
+      let username = baseName || 'user';
+      let count = 0;
+      while (await db.getUserWithSecretsByUsername(username)) {
+        count++;
+        username = `${baseName}${count}`;
+      }
+      
+      const pass = await bcrypt.hash(Math.random().toString(), 1); // senha dummy, ele usa Firebase agora
+      
+      user = await db.createUser({
+        username,
+        passwordHash: pass,
+        displayName: name || username,
+        consentVersion: cfg.CONSENT_VERSION
+      });
+      await db.pool.query('UPDATE users SET firebase_uid = $1, email = $2, avatar_url = $3 WHERE id = $4', [uid, email, picture, user.id]);
+      user = await db.getUserById(user.id);
+    } else if (acceptTerms === true && user.consent_version !== cfg.CONSENT_VERSION) {
+      // Atualizar consentimento se mandou
+      await db.pool.query('UPDATE users SET consent_version = $1, consent_at = CURRENT_TIMESTAMP WHERE id = $2', [cfg.CONSENT_VERSION, user.id]);
+      user.consent_version = cfg.CONSENT_VERSION;
+    }
+
+    const full = await db.getAuthUser(user.id);
+    res.status(user.created_at ? 200 : 201).json({
+      user: withPresence(publicSelf(user)),
+      token: sec.signToken(full),
+      needsConsent: user.consent_version !== cfg.CONSENT_VERSION
+    });
+  }));
   app.post('/api/auth/register', limiters.register, asyncHandler(async (req, res) => {
     const b = bodyOf(req);
     const username = str(b.username) && b.username.trim();

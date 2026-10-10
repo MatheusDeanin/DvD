@@ -81,6 +81,7 @@ const SCHEMA = [
     locked_until TIMESTAMPTZ,
     consent_at TIMESTAMPTZ,
     consent_version VARCHAR(20),
+    firebase_uid VARCHAR(128) UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`,
   `CREATE TABLE IF NOT EXISTS servers (
@@ -169,6 +170,7 @@ async function runMigrations() {
   await addCol('users', 'locked_until', 'TIMESTAMPTZ');
   await addCol('users', 'consent_at', 'TIMESTAMPTZ');
   await addCol('users', 'consent_version', 'VARCHAR(20)');
+  await addCol('users', 'firebase_uid', 'VARCHAR(128) UNIQUE');
   await tryRun('users.email nullable', 'ALTER TABLE users ALTER COLUMN email DROP NOT NULL');
   await tryRun('idx friend_code', 'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_friend_code ON users (friend_code)');
   await tryRun('idx messages', 'CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages (channel_id, id)');

@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { LogIn, UserPlus, Database, Shield, Zap, Sparkles, KeyRound, ArrowLeft, CheckCircle2, Download, Copy } from 'lucide-react';
+import { auth } from '../firebase';
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 
 export function AuthModal({ onLoginSuccess }) {
   const [mode, setMode] = useState('login'); // 'login' | 'register' | 'forgot'
@@ -14,62 +16,65 @@ export function AuthModal({ onLoginSuccess }) {
   const [recoveryCodes, setRecoveryCodes] = useState(null);
   const [pendingAuth, setPendingAuth] = useState(null);
 
+  const handleFirebaseBackendSync = async (userCredential, isRegister = false) => {
+    const token = await userCredential.user.getIdToken();
+    const acceptTerms = document.getElementById('consentLGPD')?.checked;
+    
+    const res = await fetch('/api/auth/firebase', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, acceptTerms })
+    });
+    
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Falha ao sincronizar com o servidor.');
+    
+    localStorage.setItem('discord_token', data.token);
+    localStorage.setItem('discord_user', JSON.stringify(data.user));
+    onLoginSuccess(data.user, data.token);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setSuccessMsg('');
     setLoading(true);
 
-    if (mode === 'forgot') {
-      try {
-        const res = await fetch('/api/auth/reset-password', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ login: email, recoveryCode: confirmPassword, newPassword: password })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Falha ao redefinir senha.');
-        setSuccessMsg('Senha alterada com sucesso! Agora você pode entrar.');
-        setPassword('');
-        setConfirmPassword('');
-        setMode('login');
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-
-    const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
-    const payload = mode === 'register'
-      ? { username, email, password, displayName: displayName || username, acceptTerms: document.getElementById('consentLGPD')?.checked }
-      : { login: email || username, password };
-
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Falha ao autenticar.');
-      }
-
-      // Save token and user
-      localStorage.setItem('discord_token', data.token);
-      localStorage.setItem('discord_user', JSON.stringify(data.user));
-
-      if (mode === 'register' && data.recoveryCodes) {
-        setRecoveryCodes(data.recoveryCodes);
-        setPendingAuth({ user: data.user, token: data.token });
+      if (mode === 'forgot') {
+        await sendPasswordResetEmail(auth, email);
+        setSuccessMsg('E-mail de redefinição enviado! Verifique sua caixa de entrada.');
+        setMode('login');
+      } else if (mode === 'register') {
+        if (!document.getElementById('consentLGPD')?.checked) {
+          throw new Error('Você precisa aceitar os Termos de Uso.');
+        }
+        const userCred = await createUserWithEmailAndPassword(auth, email, password);
+        await handleFirebaseBackendSync(userCred, true);
       } else {
-        onLoginSuccess(data.user, data.token);
+        const userCred = await signInWithEmailAndPassword(auth, email, password);
+        await handleFirebaseBackendSync(userCred, false);
       }
     } catch (err) {
-      setError(err.message);
+      console.error(err);
+      if (err.code === 'auth/email-already-in-use') setError('Esse e-mail já está em uso.');
+      else if (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') setError('E-mail ou senha incorretos.');
+      else setError(err.message || 'Falha na autenticação.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    try {
+      setError('');
+      setLoading(true);
+      const provider = new GoogleAuthProvider();
+      const userCred = await signInWithPopup(auth, provider);
+      await handleFirebaseBackendSync(userCred, mode === 'register');
+    } catch (err) {
+      console.error(err);
+      setError('Falha ao entrar com o Google.');
     } finally {
       setLoading(false);
     }
@@ -277,50 +282,37 @@ export function AuthModal({ onLoginSuccess }) {
             />
           </div>
 
-          <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted">
-                {mode === 'forgot' ? 'Nova Senha' : 'Senha'} <span className="text-discord-red">*</span>
-              </label>
-              {mode === 'login' && (
-                <button
-                  type="button"
-                  onClick={() => { setMode('forgot'); setError(''); setSuccessMsg(''); }}
-                  className="text-xs text-discord-blurple hover:underline font-medium"
-                >
-                  Esqueceu sua senha?
-                </button>
-              )}
+          {mode !== 'forgot' && (
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted">
+                  Senha <span className="text-discord-red">*</span>
+                </label>
+                {mode === 'login' && (
+                  <button
+                    type="button"
+                    onClick={() => { setMode('forgot'); setError(''); setSuccessMsg(''); }}
+                    className="text-xs text-discord-blurple hover:underline font-medium"
+                  >
+                    Esqueceu sua senha?
+                  </button>
+                )}
+              </div>
+              <input
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full px-3 py-2.5 rounded-lg bg-discord-darkest border border-white/5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-discord-blurple transition-all"
+              />
             </div>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              className="w-full px-3 py-2.5 rounded-lg bg-discord-darkest border border-white/5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-discord-blurple transition-all"
-            />
-          </div>
+          )}
 
           {mode === 'forgot' && (
-            <>
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
-                  Código de Recuperação <span className="text-discord-red">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Seu código de 16 caracteres"
-                  className="w-full px-3 py-2.5 rounded-lg bg-discord-darkest border border-white/5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-discord-blurple transition-all"
-                />
-              </div>
-              <p className="text-xs text-discord-muted text-center">
-                Você recebeu códigos de recuperação quando criou sua conta.
-              </p>
-            </>
+            <p className="text-xs text-discord-muted text-center">
+              Enviaremos um link de recuperação para o seu e-mail do Firebase.
+            </p>
           )}
 
           {mode === 'register' && (
@@ -360,7 +352,7 @@ export function AuthModal({ onLoginSuccess }) {
               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             ) : mode === 'forgot' ? (
               <>
-                <KeyRound className="w-4 h-4" /> Redefinir Senha
+                <KeyRound className="w-4 h-4" /> Enviar E-mail
               </>
             ) : mode === 'register' ? (
               <>
@@ -373,9 +365,17 @@ export function AuthModal({ onLoginSuccess }) {
             )}
           </button>
 
-          {/* Quick Demo buttons */}
           {mode !== 'forgot' && (
             <div className="pt-2 border-t border-white/5">
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                disabled={loading}
+                className="w-full py-2.5 px-4 rounded-lg bg-white hover:bg-gray-200 text-black font-semibold text-sm transition flex items-center justify-center gap-2 mb-4"
+              >
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
+                Continuar com o Google
+              </button>
               <p className="text-xs text-center text-discord-muted mb-2">
                 Teste rápido com 1 clique (para você ou seus amigos):
               </p>
