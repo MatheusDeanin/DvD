@@ -25,6 +25,8 @@ export function useWebRTC(socket, currentUser) {
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
   const peerConnectionsRef = useRef({}); // socketId -> RTCPeerConnection
+  const iceCandidatesQueueRef = useRef({}); // socketId -> RTCIceCandidate[]
+  const currentChannelIdRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
   const animFrameRef = useRef(null);
@@ -48,6 +50,7 @@ export function useWebRTC(socket, currentUser) {
     }
     Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
     peerConnectionsRef.current = {};
+    iceCandidatesQueueRef.current = {};
     setPeers({});
     setIsCameraOn(false);
     setIsScreenSharing(false);
@@ -180,9 +183,13 @@ export function useWebRTC(socket, currentUser) {
 
   // Join Voice Channel
   const joinVoice = useCallback(async (channelId) => {
-    if (currentChannelId === channelId) return;
+    if (!channelId) return;
+    const normChannelId = String(channelId);
+    if (String(currentChannelIdRef.current) === normChannelId) return;
+
     cleanupMedia();
-    setCurrentChannelId(channelId);
+    currentChannelIdRef.current = normChannelId;
+    setCurrentChannelId(normChannelId);
     setAudioError(null);
 
     try {
@@ -215,16 +222,17 @@ export function useWebRTC(socket, currentUser) {
 
       // Tell server we joined
       if (socket) {
-        socket.emit('join_voice', { channelId, user: currentUser });
+        socket.emit('join_voice', { channelId: normChannelId, user: currentUser });
       }
     } catch (err) {
       console.error('Failed to join voice channel:', err);
     }
-  }, [currentChannelId, cleanupMedia, currentUser, setupVoiceActivityDetection, socket]);
+  }, [cleanupMedia, currentUser, setupVoiceActivityDetection, socket]);
 
   // Leave Voice Channel
   const leaveVoice = useCallback(() => {
     playLeaveSound();
+    currentChannelIdRef.current = null;
     if (socket) {
       socket.emit('leave_voice');
     }
@@ -427,8 +435,33 @@ export function useWebRTC(socket, currentUser) {
       });
     };
 
+    // Helper to flush queued ICE candidates once remote description is set
+    const flushIceCandidates = async (socketId, pc) => {
+      const queue = iceCandidatesQueueRef.current[socketId] || [];
+      if (queue.length > 0) {
+        for (const cand of queue) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(cand));
+          } catch (e) {
+            console.warn('Falha ao adicionar candidato ICE da fila:', e);
+          }
+        }
+        iceCandidatesQueueRef.current[socketId] = [];
+      }
+    };
+
     // WebRTC Signaling packet (Offer / Answer / Candidate)
     const handleWebRTCSignal = async ({ senderSocketId, senderUser, signal }) => {
+      if (senderUser) {
+        setPeers((prev) => ({
+          ...prev,
+          [senderSocketId]: {
+            ...(prev[senderSocketId] || {}),
+            user: senderUser,
+          },
+        }));
+      }
+
       let pc = peerConnectionsRef.current[senderSocketId];
       if (!pc) {
         pc = createPeerConnection(senderSocketId, senderUser, false);
@@ -437,6 +470,7 @@ export function useWebRTC(socket, currentUser) {
       try {
         if (signal.type === 'offer') {
           await pc.setRemoteDescription(new RTCSessionDescription(signal));
+          await flushIceCandidates(senderSocketId, pc);
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           socket.emit('webrtc_signal', {
@@ -445,8 +479,16 @@ export function useWebRTC(socket, currentUser) {
           });
         } else if (signal.type === 'answer') {
           await pc.setRemoteDescription(new RTCSessionDescription(signal));
+          await flushIceCandidates(senderSocketId, pc);
         } else if (signal.type === 'candidate' && signal.candidate) {
-          await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          if (!pc.remoteDescription) {
+            if (!iceCandidatesQueueRef.current[senderSocketId]) {
+              iceCandidatesQueueRef.current[senderSocketId] = [];
+            }
+            iceCandidatesQueueRef.current[senderSocketId].push(signal.candidate);
+          } else {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+          }
         }
       } catch (err) {
         console.error('Error handling WebRTC signal:', err);
@@ -467,11 +509,55 @@ export function useWebRTC(socket, currentUser) {
       });
     };
 
+    // Keep peers in sync with server's live room occupants
+    const handleVoiceChannelOccupants = ({ channelId, occupants }) => {
+      if (!currentChannelIdRef.current) return;
+      if (String(channelId) !== String(currentChannelIdRef.current)) return;
+
+      setPeers((prev) => {
+        const next = { ...prev };
+        occupants.forEach((occ) => {
+          if (occ.socketId !== socket.id) {
+            if (!next[occ.socketId]) {
+              next[occ.socketId] = occ;
+            } else {
+              next[occ.socketId] = {
+                ...next[occ.socketId],
+                user: occ.user || next[occ.socketId].user,
+                isMuted: occ.isMuted,
+                isDeafened: occ.isDeafened,
+                isCameraOn: occ.isCameraOn,
+                isScreenSharing: occ.isScreenSharing,
+                isSpeaking: occ.isSpeaking,
+              };
+            }
+            if (!peerConnectionsRef.current[occ.socketId]) {
+              createPeerConnection(occ.socketId, occ.user, false);
+            }
+          }
+        });
+
+        // Remove peers no longer in occupants
+        Object.keys(next).forEach((sockId) => {
+          if (!occupants.some((occ) => occ.socketId === sockId)) {
+            if (peerConnectionsRef.current[sockId]) {
+              peerConnectionsRef.current[sockId].close();
+              delete peerConnectionsRef.current[sockId];
+            }
+            delete next[sockId];
+          }
+        });
+
+        return next;
+      });
+    };
+
     socket.on('voice_room_users', handleVoiceRoomUsers);
     socket.on('user_joined_voice', handleUserJoinedVoice);
     socket.on('user_left_voice', handleUserLeftVoice);
     socket.on('webrtc_signal', handleWebRTCSignal);
     socket.on('user_voice_state_changed', handleVoiceStateChanged);
+    socket.on('voice_channel_occupants', handleVoiceChannelOccupants);
 
     return () => {
       socket.off('voice_room_users', handleVoiceRoomUsers);
@@ -479,6 +565,7 @@ export function useWebRTC(socket, currentUser) {
       socket.off('user_left_voice', handleUserLeftVoice);
       socket.off('webrtc_signal', handleWebRTCSignal);
       socket.off('user_voice_state_changed', handleVoiceStateChanged);
+      socket.off('voice_channel_occupants', handleVoiceChannelOccupants);
     };
   }, [socket, createPeerConnection]);
 

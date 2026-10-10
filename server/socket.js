@@ -75,17 +75,28 @@ function setupSocketIO(io) {
 
     // --- WEBRTC VOICE & VIDEO ROOMS ---
     socket.on('join_voice', ({ channelId, user }) => {
+      if (!channelId) return;
+      const roomKey = String(channelId);
+
       // Leave previous voice room if in one
       leaveCurrentVoice(socket, io);
 
-      if (!voiceRooms.has(channelId)) {
-        voiceRooms.set(channelId, new Map());
+      if (!voiceRooms.has(roomKey)) {
+        voiceRooms.set(roomKey, new Map());
       }
-      const room = voiceRooms.get(channelId);
+      const room = voiceRooms.get(roomKey);
+
+      const userInfo = socketUserMap.get(socket.id) || {};
+      const resolvedUser = user || userInfo.user || {
+        id: socket.id,
+        display_name: 'Amigo',
+        username: 'amigo',
+        avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${socket.id}`
+      };
 
       const participant = {
         socketId: socket.id,
-        user: user || { id: socket.id, display_name: 'Amigo', username: 'amigo' },
+        user: resolvedUser,
         isMuted: false,
         isDeafened: false,
         isCameraOn: false,
@@ -98,28 +109,27 @@ function setupSocketIO(io) {
       const existingUsers = Array.from(room.values());
 
       room.set(socket.id, participant);
-      socket.join(`voice_${channelId}`);
+      socket.join(`voice_${roomKey}`);
 
-      const userInfo = socketUserMap.get(socket.id) || {};
-      userInfo.currentVoiceChannelId = channelId;
-      userInfo.user = participant.user;
+      userInfo.currentVoiceChannelId = roomKey;
+      userInfo.user = resolvedUser;
       socketUserMap.set(socket.id, userInfo);
 
       // Send to the newcomer the list of all peers already in the room
       socket.emit('voice_room_users', {
-        channelId,
+        channelId: roomKey,
         users: existingUsers
       });
 
       // Notify existing users that newcomer joined
-      socket.to(`voice_${channelId}`).emit('user_joined_voice', {
-        channelId,
+      socket.to(`voice_${roomKey}`).emit('user_joined_voice', {
+        channelId: roomKey,
         participant
       });
 
       // Also announce channel occupants count to everyone
       io.emit('voice_channel_occupants', {
-        channelId,
+        channelId: roomKey,
         occupants: Array.from(room.values())
       });
     });
@@ -140,7 +150,7 @@ function setupSocketIO(io) {
       const userInfo = socketUserMap.get(socket.id);
       if (!userInfo || !userInfo.currentVoiceChannelId) return;
 
-      const channelId = userInfo.currentVoiceChannelId;
+      const channelId = String(userInfo.currentVoiceChannelId);
       const room = voiceRooms.get(channelId);
       if (room && room.has(socket.id)) {
         const participant = room.get(socket.id);
@@ -152,6 +162,12 @@ function setupSocketIO(io) {
           socketId: socket.id,
           userId: userInfo.userId,
           changes
+        });
+
+        // Also update occupants list so sidebar reflects mute/camera status
+        io.emit('voice_channel_occupants', {
+          channelId,
+          occupants: Array.from(room.values())
         });
       }
     });
@@ -179,7 +195,7 @@ function leaveCurrentVoice(socket, io) {
   const userInfo = socketUserMap.get(socket.id);
   if (!userInfo || !userInfo.currentVoiceChannelId) return;
 
-  const channelId = userInfo.currentVoiceChannelId;
+  const channelId = String(userInfo.currentVoiceChannelId);
   userInfo.currentVoiceChannelId = null;
 
   const room = voiceRooms.get(channelId);
@@ -205,7 +221,8 @@ function leaveCurrentVoice(socket, io) {
 }
 
 function getVoiceOccupants(channelId) {
-  const room = voiceRooms.get(parseInt(channelId)) || voiceRooms.get(String(channelId));
+  if (!channelId) return [];
+  const room = voiceRooms.get(String(channelId));
   return room ? Array.from(room.values()) : [];
 }
 

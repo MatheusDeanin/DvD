@@ -43,9 +43,10 @@ export default function App() {
 
   // Socket
   const socketRef = useRef(null);
+  const [socket, setSocket] = useState(null);
 
-  // Initialize WebRTC
-  const voiceState = useWebRTC(socketRef.current, currentUser);
+  // Initialize WebRTC with reactive socket state
+  const voiceState = useWebRTC(socket, currentUser);
 
   // 1. Initial Auth Check from LocalStorage
   useEffect(() => {
@@ -85,52 +86,60 @@ export default function App() {
 
   // 2. Setup Socket.IO connection when authenticated
   useEffect(() => {
-    if (!currentUser || !token) return;
+    if (!currentUser || !token) {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+        setSocket(null);
+      }
+      return;
+    }
 
-    const socket = io(window.location.origin, {
+    const newSocket = io(window.location.origin, {
       transports: ['websocket', 'polling']
     });
-    socketRef.current = socket;
+    socketRef.current = newSocket;
+    setSocket(newSocket);
 
-    socket.on('connect', () => {
-      console.log('Socket conectado!', socket.id);
-      socket.emit('register_user', currentUser);
+    newSocket.on('connect', () => {
+      console.log('Socket conectado!', newSocket.id);
+      newSocket.emit('register_user', currentUser);
     });
 
-    socket.on('new_message', (newMsg) => {
+    newSocket.on('new_message', (newMsg) => {
       setMessages((prev) => {
         if (prev.some((m) => m.id === newMsg.id)) return prev;
         return [...prev, newMsg];
       });
     });
 
-    socket.on('new_dm', (newDm) => {
+    newSocket.on('new_dm', (newDm) => {
       setDmMessages((prev) => {
         if (prev.some((m) => m.id === newDm.id)) return prev;
         return [...prev, newDm];
       });
     });
 
-    socket.on('friend_request_received', () => {
+    newSocket.on('friend_request_received', () => {
       loadFriends();
     });
 
-    socket.on('friend_request_accepted', () => {
+    newSocket.on('friend_request_accepted', () => {
       loadFriends();
     });
 
-    socket.on('user_typing', ({ user }) => {
+    newSocket.on('user_typing', ({ user }) => {
       setTypingUsers((prev) => {
         if (prev.some((u) => u.id === user.id)) return prev;
         return [...prev, user];
       });
     });
 
-    socket.on('user_stop_typing', ({ userId }) => {
+    newSocket.on('user_stop_typing', ({ userId }) => {
       setTypingUsers((prev) => prev.filter((u) => u.id !== userId));
     });
 
-    socket.on('voice_channel_occupants', ({ channelId, occupants }) => {
+    newSocket.on('voice_channel_occupants', ({ channelId, occupants }) => {
       setChannels((prev) =>
         prev.map((ch) =>
           String(ch.id) === String(channelId) ? { ...ch, occupants } : ch
@@ -138,13 +147,13 @@ export default function App() {
       );
     });
 
-    socket.on('channel_created', ({ serverId, channel }) => {
+    newSocket.on('channel_created', ({ serverId, channel }) => {
       if (String(serverId) === String(activeServerId)) {
         setChannels((prev) => [...prev, channel]);
       }
     });
 
-    socket.on('user_status_update', ({ userId, status_mode }) => {
+    newSocket.on('user_status_update', ({ userId, status_mode }) => {
       setMembers((prev) =>
         prev.map((m) => (m.id === userId ? { ...m, status_mode } : m))
       );
@@ -154,7 +163,9 @@ export default function App() {
     });
 
     return () => {
-      socket.disconnect();
+      newSocket.disconnect();
+      socketRef.current = null;
+      setSocket(null);
     };
   }, [currentUser?.id, token]);
 

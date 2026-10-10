@@ -248,47 +248,42 @@ export function ChannelSidebar({
                       </button>
 
                       {/* Connected members list under channel */}
-                      {isInThisVoice && (
+                      {occupants.length > 0 && (
                         <div className="pl-6 pr-2 py-1 space-y-1">
-                          {/* You */}
-                          <div className="flex items-center justify-between text-xs py-0.5 text-discord-text">
-                            <div className="flex items-center gap-2 truncate">
-                              <img
-                                src={currentUser?.avatar_url || 'https://api.dicebear.com/7.x/bottts/svg?seed=user'}
-                                alt=""
-                                className={`w-5 h-5 rounded-full object-cover ${
-                                  voiceState?.isSpeaking ? 'speaking-ring' : ''
-                                }`}
-                              />
-                              <span className="truncate font-medium">{currentUser?.display_name || currentUser?.username} (Você)</span>
-                            </div>
-                            <div className="flex items-center gap-1 text-discord-muted">
-                              {voiceState?.isMuted && <MicOff className="w-3 h-3 text-discord-red" />}
-                              {voiceState?.isCameraOn && <Video className="w-3 h-3 text-discord-green" />}
-                              {voiceState?.isScreenSharing && <Monitor className="w-3 h-3 text-discord-blurple" />}
-                            </div>
-                          </div>
+                          {occupants.map((occ) => {
+                            const isMe = String(occ.user?.id) === String(currentUser?.id);
+                            const peerData = voiceState?.peers?.[occ.socketId];
+                            const isSpeaking = isMe ? voiceState?.isSpeaking : (peerData?.isSpeaking || occ.isSpeaking);
+                            const isMuted = isMe ? voiceState?.isMuted : (peerData?.isMuted || occ.isMuted);
+                            const isCameraOn = isMe ? voiceState?.isCameraOn : (peerData?.isCameraOn || occ.isCameraOn);
+                            const isScreenSharing = isMe ? voiceState?.isScreenSharing : (peerData?.isScreenSharing || occ.isScreenSharing);
+                            const dispUser = isMe ? currentUser : (peerData?.user || occ.user);
 
-                          {/* Remote peers */}
-                          {Object.entries(voiceState?.peers || {}).map(([socketId, peer]) => (
-                            <div key={socketId} className="flex items-center justify-between text-xs py-0.5 text-discord-muted hover:text-discord-text">
-                              <div className="flex items-center gap-2 truncate">
-                                <img
-                                  src={peer.user?.avatar_url || 'https://api.dicebear.com/7.x/bottts/svg?seed=' + socketId}
-                                  alt=""
-                                  className={`w-5 h-5 rounded-full object-cover ${
-                                    peer.isSpeaking ? 'speaking-ring' : ''
-                                  }`}
-                                />
-                                <span className="truncate font-medium">{peer.user?.display_name || peer.user?.username || 'Amigo'}</span>
+                            return (
+                              <div
+                                key={occ.socketId || occ.user?.id}
+                                className="flex items-center justify-between text-xs py-0.5 text-discord-muted hover:text-discord-text transition"
+                              >
+                                <div className="flex items-center gap-2 truncate">
+                                  <img
+                                    src={dispUser?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${dispUser?.username || 'user'}`}
+                                    alt=""
+                                    className={`w-5 h-5 rounded-full object-cover ${
+                                      isSpeaking ? 'ring-2 ring-discord-green' : ''
+                                    }`}
+                                  />
+                                  <span className={`truncate font-medium ${isMe ? 'text-discord-text' : ''}`}>
+                                    {dispUser?.display_name || dispUser?.username || 'Amigo'} {isMe && '(Você)'}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  {isMuted && <MicOff className="w-3 h-3 text-discord-red" />}
+                                  {isCameraOn && <Video className="w-3 h-3 text-discord-green" />}
+                                  {isScreenSharing && <Monitor className="w-3 h-3 text-discord-blurple" />}
+                                </div>
                               </div>
-                              <div className="flex items-center gap-1">
-                                {peer.isMuted && <MicOff className="w-3 h-3 text-discord-red" />}
-                                {peer.isCameraOn && <Video className="w-3 h-3 text-discord-green" />}
-                                {peer.isScreenSharing && <Monitor className="w-3 h-3 text-discord-blurple" />}
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>

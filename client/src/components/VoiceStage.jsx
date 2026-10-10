@@ -142,7 +142,17 @@ export function VoiceStage({
     }
   };
 
-  const peersList = Object.entries(voiceState.peers || {});
+  // Combine voiceState.peers with activeChannel.occupants so friends appear immediately
+  const peersMap = { ...(voiceState.peers || {}) };
+  if (activeChannel?.occupants) {
+    activeChannel.occupants.forEach((occ) => {
+      const isMe = String(occ.user?.id) === String(currentUser?.id);
+      if (!isMe && occ.socketId && !peersMap[occ.socketId]) {
+        peersMap[occ.socketId] = occ;
+      }
+    });
+  }
+  const peersList = Object.entries(peersMap);
   const totalCount = peersList.length + 1; // + local
 
   return (
