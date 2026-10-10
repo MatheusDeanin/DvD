@@ -89,7 +89,7 @@ export function AuthModal({ onLoginSuccess }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
-      <div className="relative w-full max-w-md bg-discord-dark rounded-xl shadow-2xl border border-white/5 overflow-hidden">
+      <div className="relative w-full max-w-md bg-discord-dark rounded-xl shadow-2xl border border-white/5 overflow-y-auto max-h-[95vh] scrollbar-thin">
         {/* Banner header */}
         <div className="bg-gradient-to-r from-discord-blurple to-indigo-600 p-6 text-center text-white relative">
           <div className="inline-flex p-1.5 rounded-2xl bg-white/10 backdrop-blur-md mb-2 shadow-inner border border-white/10">
