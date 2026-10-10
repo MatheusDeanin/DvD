@@ -14,6 +14,7 @@ import {
   Maximize2
 } from 'lucide-react';
 import { playMessageSound } from '../utils/audio';
+import { generateAvatar } from '../utils/avatar';
 
 const COMMON_EMOJIS = ['😀', '😂', '🔥', '🎮', '💀', '🚀', '❤️', '👀', '👍', '🤡', '⚡', '🎉', '🏆', '🍕', '😎'];
 
@@ -155,7 +156,7 @@ export function DirectMessageChat({
 
           <div className="relative flex-shrink-0">
             <img
-              src={friend?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${friend?.username}`}
+              src={friend?.avatar_url || generateAvatar(friend?.username)}
               alt=""
               className="w-7 h-7 rounded-full object-cover shadow"
             />
@@ -197,7 +198,7 @@ export function DirectMessageChat({
         <div className="pt-4 pb-6 border-b border-white/5">
           <div className="relative w-16 h-16 rounded-full overflow-hidden mb-3 border-2 border-discord-blurple shadow-lg">
             <img
-              src={friend?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${friend?.username}`}
+              src={friend?.avatar_url || generateAvatar(friend?.username)}
               alt=""
               className="w-full h-full object-cover"
             />
@@ -258,8 +259,8 @@ export function DirectMessageChat({
                 <img
                   src={
                     isMe
-                      ? currentUser?.avatar_url || 'https://api.dicebear.com/7.x/bottts/svg?seed=me'
-                      : friend?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${friend?.username}`
+                      ? currentUser?.avatar_url || generateAvatar('me')
+                      : friend?.avatar_url || generateAvatar(friend?.username)
                   }
                   alt=""
                   className="w-10 h-10 rounded-full object-cover flex-shrink-0 mt-0.5 shadow-sm"

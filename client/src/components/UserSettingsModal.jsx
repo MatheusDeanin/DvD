@@ -17,14 +17,15 @@ import {
   Sliders,
   CheckCircle2
 } from 'lucide-react';
+import { generateAvatar } from '../utils/avatar';
 
 const AVATAR_PRESETS = [
-  'https://api.dicebear.com/7.x/bottts/svg?seed=Gamer1',
-  'https://api.dicebear.com/7.x/bottts/svg?seed=CyberNinja',
-  'https://api.dicebear.com/7.x/bottts/svg?seed=ProSniper',
-  'https://api.dicebear.com/7.x/pixel-art/svg?seed=HeroX',
-  'https://api.dicebear.com/7.x/pixel-art/svg?seed=Valkyrie',
-  'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix'
+  generateAvatar('Gamer1'),
+  generateAvatar('CyberNinja'),
+  generateAvatar('ProSniper'),
+  generateAvatar('HeroX'),
+  generateAvatar('Valkyrie'),
+  generateAvatar('Felix')
 ];
 
 const BANNER_COLORS = [
@@ -441,7 +442,7 @@ export function UserSettingsModal({
                     <div className="px-4 pb-4 relative">
                       <div className="relative -mt-12 mb-3 inline-block">
                         <img
-                          src={avatarUrl || 'https://api.dicebear.com/7.x/bottts/svg?seed=' + currentUser?.username}
+                          src={avatarUrl || generateAvatar(currentUser?.username)}
                           alt=""
                           className="w-20 h-20 rounded-full border-4 border-discord-darkest bg-discord-dark object-cover shadow"
                         />

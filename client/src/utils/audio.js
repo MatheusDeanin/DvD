@@ -152,3 +152,38 @@ export function playMessageSound() {
     });
   } catch (e) {}
 }
+
+export function playRingSound() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc1.type = 'sine';
+    osc2.type = 'sine';
+    
+    // Ringtone frequencies
+    osc1.frequency.setValueAtTime(440, now);
+    osc2.frequency.setValueAtTime(480, now);
+
+    // Pulse volume
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.2, now + 0.1);
+    gain.gain.setValueAtTime(0.2, now + 0.9);
+    gain.gain.linearRampToValueAtTime(0, now + 1.0);
+
+    osc1.connect(gain);
+    osc2.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc1.start(now);
+    osc2.start(now);
+    osc1.stop(now + 1.0);
+    osc2.stop(now + 1.0);
+  } catch (e) {}
+}

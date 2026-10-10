@@ -15,6 +15,7 @@ import {
   Video,
   Users
 } from 'lucide-react';
+import { generateAvatar } from '../utils/avatar';
 
 export function ChannelSidebar({
   activeServer,
@@ -134,7 +135,7 @@ export function ChannelSidebar({
                       >
                         <div className="relative flex-shrink-0">
                           <img
-                            src={f.user?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${f.user?.username}`}
+                            src={f.user?.avatar_url || generateAvatar(f.user?.username || 'user')}
                             alt=""
                             className="w-7 h-7 rounded-full object-cover"
                           />
@@ -266,7 +267,7 @@ export function ChannelSidebar({
                               >
                                 <div className="flex items-center gap-2 truncate">
                                   <img
-                                    src={dispUser?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${dispUser?.username || 'user'}`}
+                                    src={dispUser?.avatar_url || generateAvatar(dispUser?.username || 'user')}
                                     alt=""
                                     className={`w-5 h-5 rounded-full object-cover ${
                                       isSpeaking ? 'ring-2 ring-discord-green' : ''
@@ -328,7 +329,7 @@ export function ChannelSidebar({
         >
           <div className="relative flex-shrink-0">
             <img
-              src={currentUser?.avatar_url || 'https://api.dicebear.com/7.x/bottts/svg?seed=me'}
+              src={currentUser?.avatar_url || generateAvatar(currentUser?.username || 'me')}
               alt={currentUser?.username}
               className="w-8 h-8 rounded-full object-cover"
             />

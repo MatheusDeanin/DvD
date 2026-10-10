@@ -1,5 +1,6 @@
 import React from 'react';
 import { Crown, Shield } from 'lucide-react';
+import { generateAvatar } from '../utils/avatar';
 
 export function MemberList({ members, currentUserId }) {
   const statusColors = {
@@ -29,7 +30,7 @@ export function MemberList({ members, currentUserId }) {
                 <img
                   src={
                     member.avatar_url ||
-                    `https://api.dicebear.com/7.x/bottts/svg?seed=${member.username}`
+                    generateAvatar(member.username)
                   }
                   alt={member.username}
                   className="w-8 h-8 rounded-full object-cover"
@@ -77,7 +78,7 @@ export function MemberList({ members, currentUserId }) {
                   <img
                     src={
                       member.avatar_url ||
-                      `https://api.dicebear.com/7.x/bottts/svg?seed=${member.username}`
+                      generateAvatar(member.username)
                     }
                     alt={member.username}
                     className="w-8 h-8 rounded-full object-cover grayscale"

@@ -1,726 +1,673 @@
+// Camada de dados do DvD (PostgreSQL / Neon). Todas as consultas são parametrizadas.
+// Em desenvolvimento/testes (sem DATABASE_URL) usa pg-mem, um Postgres em memória.
 const { Pool } = require('pg');
+const cfg = require('./config');
+const sec = require('./security');
 
 let pool = null;
-let isPostgres = false;
+let dbKind = 'none'; // 'postgres' | 'memory'
 
-// Fallback in-memory storage if Neon Postgres is not connected yet
-const memoryStore = {
-  users: [],
-  servers: [],
-  server_members: [],
-  channels: [],
-  messages: [],
-  nextIds: { user: 1, server: 1, channel: 1, message: 1 }
+const USER_COLS =
+  'id, username, display_name, avatar_url, banner_color, bio, status_mode, status_text, friend_code, consent_version, created_at';
+const PUBLIC_USER_COLS = 'id, username, display_name, avatar_url, banner_color, bio, status_mode, status_text';
+
+const q = (text, params) => pool.query(text, params);
+const one = async (text, params) => (await q(text, params)).rows[0] || null;
+const many = async (text, params) => (await q(text, params)).rows;
+const count = async (text, params) => Number((await one(text, params)).n);
+const placeholders = (arr, offset = 0) => arr.map((_, i) => `$${i + offset + 1}`).join(', ');
+const isUniqueViolation = (err) => err && (err.code === '23505' || /duplicate key|unique constraint/i.test(err.message || ''));
+
+const parseAtt = (v) => {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    try { return JSON.parse(v); } catch { return []; }
+  }
+  return [];
 };
+const fixMsg = (row) => (row ? { ...row, attachments: parseAtt(row.attachments) } : row);
 
+// ---------------------------------------------------------------------------
+// Inicialização, esquema e migrações
+// ---------------------------------------------------------------------------
 async function initDB() {
-  const databaseUrl = process.env.DATABASE_URL;
+  const url = process.env.DATABASE_URL;
+  const wantsMemory = process.env.DVD_DB_MODE === 'memory' || (!url && !cfg.IS_PROD);
 
-  if (databaseUrl && (databaseUrl.startsWith('postgres://') || databaseUrl.startsWith('postgresql://'))) {
-    try {
-      console.log(' Conectando ao banco Neon PostgreSQL...');
-      pool = new Pool({
-        connectionString: databaseUrl,
-        ssl: { rejectUnauthorized: false },
-        max: 10,
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 10000,
-      });
-
-      // Test connection
-      await pool.query('SELECT 1');
-      isPostgres = true;
-      console.log(' Conectado com sucesso ao Neon PostgreSQL!');
-
-      // Create tables automatically
-      await createTables();
-      await seedDefaultServer();
-      return;
-    } catch (err) {
-      console.warn(' Falha ao conectar no Neon Postgres:', err.message);
-      console.warn(' Utilizando armazenamento local em memria como fallback.');
-      pool = null;
-      isPostgres = false;
-    }
+  if (url && /^postgres(ql)?:\/\//.test(url) && !wantsMemory) {
+    console.log(' Conectando ao banco Neon PostgreSQL...');
+    pool = new Pool({
+      connectionString: url,
+      // Se a URL já traz sslmode, ela define o comportamento; caso contrário exige TLS validado.
+      ssl: /sslmode=/.test(url) ? undefined : { rejectUnauthorized: true },
+      max: 10,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000
+    });
+    await pool.query('SELECT 1');
+    dbKind = 'postgres';
+    console.log(' Conectado com sucesso ao Neon PostgreSQL!');
+  } else if (wantsMemory) {
+    // eslint-disable-next-line global-require
+    const { newDb } = require('pg-mem');
+    const mem = newDb();
+    const { Pool: MemPool } = mem.adapters.createPg();
+    pool = new MemPool();
+    dbKind = 'memory';
+    console.log(' Banco em memória (pg-mem) ativo: use apenas para desenvolvimento e testes.');
   } else {
-    console.log(' Nenhuma DATABASE_URL informada. Rodando com armazenamento local para testes.');
+    throw new Error('DATABASE_URL não configurada. Defina a URL do Neon PostgreSQL nas variáveis de ambiente.');
   }
 
-  // Seed default server in memory store
-  seedDefaultMemory();
+  await createTables();
+  await runMigrations();
 }
+
+const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(120),
+    password VARCHAR(255) NOT NULL,
+    display_name VARCHAR(100),
+    avatar_url TEXT,
+    banner_color VARCHAR(30) DEFAULT '#5865F2',
+    bio TEXT DEFAULT '',
+    status_mode VARCHAR(20) DEFAULT 'online',
+    status_text VARCHAR(100) DEFAULT '',
+    friend_code VARCHAR(20),
+    token_version INT DEFAULT 0,
+    failed_logins INT DEFAULT 0,
+    locked_until TIMESTAMPTZ,
+    consent_at TIMESTAMPTZ,
+    consent_version VARCHAR(20),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS servers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    icon_url TEXT,
+    owner_id INT REFERENCES users(id) ON DELETE SET NULL,
+    invite_code VARCHAR(30) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS server_members (
+    server_id INT REFERENCES servers(id) ON DELETE CASCADE,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(20) DEFAULT 'member',
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (server_id, user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS channels (
+    id SERIAL PRIMARY KEY,
+    server_id INT REFERENCES servers(id) ON DELETE CASCADE,
+    name VARCHAR(50) NOT NULL,
+    type VARCHAR(20) DEFAULT 'text',
+    topic VARCHAR(250) DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS messages (
+    id SERIAL PRIMARY KEY,
+    channel_id INT REFERENCES channels(id) ON DELETE CASCADE,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    attachments JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS friends (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    friend_id INT REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, friend_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS direct_messages (
+    id SERIAL PRIMARY KEY,
+    sender_id INT REFERENCES users(id) ON DELETE CASCADE,
+    receiver_id INT REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    attachments JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS recovery_codes (
+    id SERIAL PRIMARY KEY,
+    user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    code_hash VARCHAR(100) NOT NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS server_invites (
+    id SERIAL PRIMARY KEY,
+    server_id INT REFERENCES servers(id) ON DELETE CASCADE,
+    from_user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    to_user_id INT REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(server_id, to_user_id)
+  )`
+];
 
 async function createTables() {
-  const queries = `
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      username VARCHAR(50) UNIQUE NOT NULL,
-      email VARCHAR(120) UNIQUE NOT NULL,
-      password VARCHAR(255) NOT NULL,
-      display_name VARCHAR(100),
-      avatar_url TEXT,
-      banner_color VARCHAR(30) DEFAULT '#5865F2',
-      bio TEXT DEFAULT '',
-      status_mode VARCHAR(20) DEFAULT 'online',
-      status_text VARCHAR(100) DEFAULT '',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS servers (
-      id SERIAL PRIMARY KEY,
-      name VARCHAR(100) NOT NULL,
-      icon_url TEXT,
-      owner_id INT REFERENCES users(id) ON DELETE SET NULL,
-      invite_code VARCHAR(30) UNIQUE NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS server_members (
-      server_id INT REFERENCES servers(id) ON DELETE CASCADE,
-      user_id INT REFERENCES users(id) ON DELETE CASCADE,
-      role VARCHAR(20) DEFAULT 'member',
-      joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (server_id, user_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS channels (
-      id SERIAL PRIMARY KEY,
-      server_id INT REFERENCES servers(id) ON DELETE CASCADE,
-      name VARCHAR(50) NOT NULL,
-      type VARCHAR(20) DEFAULT 'text',
-      topic VARCHAR(250) DEFAULT '',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS messages (
-      id SERIAL PRIMARY KEY,
-      channel_id INT REFERENCES channels(id) ON DELETE CASCADE,
-      user_id INT REFERENCES users(id) ON DELETE CASCADE,
-      content TEXT NOT NULL,
-      attachments JSONB DEFAULT '[]'::jsonb,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS friends (
-      id SERIAL PRIMARY KEY,
-      user_id INT REFERENCES users(id) ON DELETE CASCADE,
-      friend_id INT REFERENCES users(id) ON DELETE CASCADE,
-      status VARCHAR(20) DEFAULT 'pending',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(user_id, friend_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS direct_messages (
-      id SERIAL PRIMARY KEY,
-      sender_id INT REFERENCES users(id) ON DELETE CASCADE,
-      receiver_id INT REFERENCES users(id) ON DELETE CASCADE,
-      content TEXT NOT NULL,
-      attachments JSONB DEFAULT '[]'::jsonb,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `;
-  await pool.query(queries);
-  console.log(' Tabelas verificadas/criadas no Neon PostgreSQL.');
+  for (const stmt of SCHEMA) await q(stmt);
+  console.log(' Tabelas verificadas/criadas.');
 }
 
-async function seedDefaultServer() {
-  const res = await pool.query('SELECT COUNT(*) FROM servers');
-  if (parseInt(res.rows[0].count) === 0) {
-    const srv = await pool.query(
-      `INSERT INTO servers (name, icon_url, invite_code) 
-       VALUES ($1, $2, $3) RETURNING id`,
-      ['Lobby dos Amigos', 'https://api.dicebear.com/7.x/identicon/svg?seed=LobbyAmigos', 'AMIGOS10']
-    );
-    const serverId = srv.rows[0].id;
+async function tryRun(label, text, params) {
+  try {
+    await q(text, params);
+  } catch (err) {
+    if (dbKind === 'postgres') console.warn(` Migração "${label}" ignorada:`, err.message);
+  }
+}
 
-    // Default channels
-    const channels = [
-      { name: 'geral', type: 'text', topic: 'Conversas gerais e memes dos 10 amigos' },
-      { name: 'clipes-e-jogos', type: 'text', topic: 'Compartilhe seus clipes e melhores jogadas' },
-      { name: 'musica-e-bots', type: 'text', topic: 'Chat de links e comandos' },
-      { name: 'Sala de Jogos', type: 'voice', topic: 'Canal de voz para jogos' },
-      { name: 'Bate-Papo', type: 'voice', topic: 'Canal de voz geral' },
-      { name: 'Transmissão Ao Vivo', type: 'voice', topic: 'Para compartilhar telas e câmeras' }
-    ];
+// Migrações idempotentes para bancos criados por versões anteriores do DvD.
+async function runMigrations() {
+  const addCol = (table, col, def) => tryRun(`${table}.${col}`, `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${col} ${def}`);
+  await addCol('users', 'friend_code', 'VARCHAR(20)');
+  await addCol('users', 'token_version', 'INT DEFAULT 0');
+  await addCol('users', 'failed_logins', 'INT DEFAULT 0');
+  await addCol('users', 'locked_until', 'TIMESTAMPTZ');
+  await addCol('users', 'consent_at', 'TIMESTAMPTZ');
+  await addCol('users', 'consent_version', 'VARCHAR(20)');
+  await tryRun('users.email nullable', 'ALTER TABLE users ALTER COLUMN email DROP NOT NULL');
+  await tryRun('idx friend_code', 'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_friend_code ON users (friend_code)');
+  await tryRun('idx messages', 'CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages (channel_id, id)');
+  await tryRun('idx dm', 'CREATE INDEX IF NOT EXISTS idx_dm_pair ON direct_messages (sender_id, receiver_id)');
+  await tryRun('idx members', 'CREATE INDEX IF NOT EXISTS idx_members_user ON server_members (user_id)');
 
-    for (const ch of channels) {
-      await pool.query(
-        'INSERT INTO channels (server_id, name, type, topic) VALUES ($1, $2, $3, $4)',
-        [serverId, ch.name, ch.type, ch.topic]
+  // 1) Servidor público padrão (convite AMIGOS10) deixa de existir: ninguém entra mais sem convite.
+  const legacy = await many("SELECT id FROM servers WHERE invite_code = 'AMIGOS10' AND owner_id IS NULL");
+  for (const s of legacy) await deleteServerCascade(s.id);
+  if (legacy.length) console.log(' Servidor público padrão removido (migração de segurança).');
+
+  // 2) Convites antigos fracos (INV-xxxxxx) são substituídos por códigos aleatórios fortes.
+  const weak = await many("SELECT id FROM servers WHERE invite_code LIKE 'INV-%'");
+  for (const s of weak) await q('UPDATE servers SET invite_code = $1 WHERE id = $2', [sec.generateInviteCode(), s.id]);
+
+  // 3) Minimização de dados (LGPD): e-mail deixa de ser coletado/armazenado.
+  await tryRun('purge email', 'UPDATE users SET email = NULL WHERE email IS NOT NULL');
+
+  // 4) Privacidade: sem URLs externas de avatar/ícone (ex.: serviços de terceiros).
+  await tryRun('purge avatars', "UPDATE users SET avatar_url = NULL WHERE avatar_url IS NOT NULL AND avatar_url NOT LIKE 'data:image/%'");
+  await tryRun('purge icons', "UPDATE servers SET icon_url = NULL WHERE icon_url IS NOT NULL AND icon_url NOT LIKE 'data:image/%'");
+
+  // 5) Código de amigo para usuários existentes.
+  const noCode = await many('SELECT id FROM users WHERE friend_code IS NULL');
+  for (const u of noCode) await assignFriendCode(u.id);
+}
+
+async function assignFriendCode(userId) {
+  for (let i = 0; i < 8; i++) {
+    const code = sec.generateFriendCode();
+    try {
+      const row = await one('UPDATE users SET friend_code = $1 WHERE id = $2 RETURNING friend_code', [code, userId]);
+      return row && row.friend_code;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+    }
+  }
+  throw new Error('Não foi possível gerar código de amigo.');
+}
+
+async function close() {
+  if (pool) await pool.end().catch(() => {});
+  pool = null;
+}
+
+// ---------------------------------------------------------------------------
+// Usuários
+// ---------------------------------------------------------------------------
+const getUserWithSecretsByUsername = (username) =>
+  one('SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [username]);
+const getUserWithSecretsById = (id) => one('SELECT * FROM users WHERE id = $1', [id]);
+const getUserById = (id) => one(`SELECT ${USER_COLS} FROM users WHERE id = $1`, [id]);
+const getPublicUser = (id) => one(`SELECT ${PUBLIC_USER_COLS} FROM users WHERE id = $1`, [id]);
+const getAuthUser = (id) => one('SELECT id, username, token_version FROM users WHERE id = $1', [id]);
+const getUserByFriendCode = (code) => one(`SELECT ${PUBLIC_USER_COLS} FROM users WHERE friend_code = $1`, [code]);
+const getUserByUsername = (username) =>
+  one(`SELECT ${PUBLIC_USER_COLS} FROM users WHERE LOWER(username) = LOWER($1)`, [username]);
+
+async function createUser({ username, passwordHash, displayName, consentVersion }) {
+  const user = await one(
+    `INSERT INTO users (username, password, display_name, avatar_url, consent_at, consent_version)
+     VALUES ($1, $2, $3, NULL, $4, $5) RETURNING id`,
+    [username, passwordHash, displayName || username, new Date(), consentVersion]
+  );
+  await assignFriendCode(user.id);
+  return getUserById(user.id);
+}
+
+async function updateUserProfile(id, p) {
+  const sets = [];
+  const vals = [];
+  const map = {
+    displayName: 'display_name',
+    avatarUrl: 'avatar_url',
+    bannerColor: 'banner_color',
+    bio: 'bio',
+    statusMode: 'status_mode',
+    statusText: 'status_text'
+  };
+  for (const [key, col] of Object.entries(map)) {
+    if (Object.prototype.hasOwnProperty.call(p, key)) {
+      vals.push(p[key]);
+      sets.push(`${col} = $${vals.length}`);
+    }
+  }
+  if (!sets.length) return getUserById(id);
+  vals.push(id);
+  await q(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals);
+  return getUserById(id);
+}
+
+const registerConsent = (id, version) =>
+  q('UPDATE users SET consent_at = $1, consent_version = $2 WHERE id = $3', [new Date(), version, id]);
+
+// Troca de senha: incrementa token_version, invalidando todas as sessões antigas.
+async function setPassword(id, passwordHash) {
+  await q(
+    'UPDATE users SET password = $1, token_version = COALESCE(token_version, 0) + 1, failed_logins = 0, locked_until = NULL WHERE id = $2',
+    [passwordHash, id]
+  );
+  return getAuthUser(id);
+}
+async function bumpTokenVersion(id) {
+  await q('UPDATE users SET token_version = COALESCE(token_version, 0) + 1 WHERE id = $1', [id]);
+  return getAuthUser(id);
+}
+
+async function recordLoginFailure(id) {
+  const u = await one('SELECT failed_logins FROM users WHERE id = $1', [id]);
+  const fails = (u && Number(u.failed_logins) || 0) + 1;
+  let lockedUntil = null;
+  let newFails = fails;
+  if (fails >= cfg.LOCKOUT.MAX_FAILS) {
+    lockedUntil = new Date(Date.now() + cfg.LOCKOUT.MINUTES * 60 * 1000);
+    newFails = 0;
+  }
+  await q('UPDATE users SET failed_logins = $1, locked_until = $2 WHERE id = $3', [newFails, lockedUntil, id]);
+  return { locked: !!lockedUntil, lockedUntil };
+}
+const resetLoginFailures = (id) => q('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1', [id]);
+
+const regenerateFriendCode = (id) => assignFriendCode(id);
+
+// Códigos de recuperação (armazenados apenas como hash bcrypt)
+async function replaceRecoveryCodes(userId, hashes) {
+  await q('DELETE FROM recovery_codes WHERE user_id = $1', [userId]);
+  for (const h of hashes) await q('INSERT INTO recovery_codes (user_id, code_hash) VALUES ($1, $2)', [userId, h]);
+}
+const getUnusedRecoveryCodes = (userId) =>
+  many('SELECT id, code_hash FROM recovery_codes WHERE user_id = $1 AND used_at IS NULL', [userId]);
+const markRecoveryCodeUsed = (id) => q('UPDATE recovery_codes SET used_at = $1 WHERE id = $2', [new Date(), id]);
+const countUnusedRecoveryCodes = (userId) =>
+  count('SELECT COUNT(*) AS n FROM recovery_codes WHERE user_id = $1 AND used_at IS NULL', [userId]);
+
+// ---------------------------------------------------------------------------
+// Servidores, membros e canais
+// ---------------------------------------------------------------------------
+const getUserServers = (userId) =>
+  many(
+    `SELECT s.id, s.name, s.icon_url, s.owner_id, s.invite_code, s.created_at, sm.role
+     FROM servers s JOIN server_members sm ON sm.server_id = s.id
+     WHERE sm.user_id = $1 ORDER BY s.id ASC`,
+    [userId]
+  );
+const getServer = (id) => one('SELECT * FROM servers WHERE id = $1', [id]);
+const getMemberRole = async (serverId, userId) => {
+  const r = await one('SELECT role FROM server_members WHERE server_id = $1 AND user_id = $2', [serverId, userId]);
+  return r ? r.role : null;
+};
+const countOwnedServers = (userId) => count('SELECT COUNT(*) AS n FROM servers WHERE owner_id = $1', [userId]);
+const countJoinedServers = (userId) => count('SELECT COUNT(*) AS n FROM server_members WHERE user_id = $1', [userId]);
+const countServerMembers = (serverId) => count('SELECT COUNT(*) AS n FROM server_members WHERE server_id = $1', [serverId]);
+const countServerChannels = (serverId) => count('SELECT COUNT(*) AS n FROM channels WHERE server_id = $1', [serverId]);
+
+async function createServer({ name, ownerId }) {
+  let server = null;
+  for (let i = 0; i < 8 && !server; i++) {
+    try {
+      server = await one(
+        'INSERT INTO servers (name, icon_url, owner_id, invite_code) VALUES ($1, NULL, $2, $3) RETURNING *',
+        [name, ownerId, sec.generateInviteCode()]
       );
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
     }
-    console.log(' Servidor padro criado no Neon PostgreSQL com cdigo de convite: AMIGOS10');
   }
+  if (!server) throw new Error('Falha ao gerar convite.');
+  await q('INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, $3)', [server.id, ownerId, 'owner']);
+  await q('INSERT INTO channels (server_id, name, type, topic) VALUES ($1, $2, $3, $4)', [server.id, 'geral', 'text', 'Canal de texto principal']);
+  await q('INSERT INTO channels (server_id, name, type, topic) VALUES ($1, $2, $3, $4)', [server.id, 'Sala de Voz', 'voice', 'Canal de voz principal']);
+  return { ...server, role: 'owner' };
 }
 
-function seedDefaultMemory() {
-  if (memoryStore.servers.length === 0) {
-    const serverId = memoryStore.nextIds.server++;
-    memoryStore.servers.push({
-      id: serverId,
-      name: 'Lobby dos Amigos',
-      icon_url: 'https://api.dicebear.com/7.x/identicon/svg?seed=LobbyAmigos',
-      owner_id: 1,
-      invite_code: 'AMIGOS10',
-      created_at: new Date()
-    });
-
-    const channels = [
-      { name: 'geral', type: 'text', topic: 'Conversas gerais e memes dos 10 amigos' },
-      { name: 'clipes-e-jogos', type: 'text', topic: 'Compartilhe seus clipes e melhores jogadas' },
-      { name: 'musica-e-bots', type: 'text', topic: 'Chat de links e comandos' },
-      { name: 'Sala de Jogos', type: 'voice', topic: 'Canal de voz para jogos' },
-      { name: 'Bate-Papo', type: 'voice', topic: 'Canal de voz geral' },
-      { name: 'Transmissão Ao Vivo', type: 'voice', topic: 'Para compartilhar telas e câmeras' }
-    ];
-
-    channels.forEach(ch => {
-      memoryStore.channels.push({
-        id: memoryStore.nextIds.channel++,
-        server_id: serverId,
-        name: ch.name,
-        type: ch.type,
-        topic: ch.topic,
-        created_at: new Date()
-      });
-    });
+const getServerByInvite = (code) => one('SELECT * FROM servers WHERE UPPER(invite_code) = $1', [code]);
+async function addMember(serverId, userId, role = 'member') {
+  try {
+    await q('INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, $3)', [serverId, userId, role]);
+    return true;
+  } catch (err) {
+    if (isUniqueViolation(err)) return false;
+    throw err;
   }
 }
-
-// User operations
-async function getUserByEmailOrUsername(identifier) {
-  if (isPostgres) {
-    const res = await pool.query(
-      'SELECT * FROM users WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($1)',
-      [identifier]
-    );
-    return res.rows[0] || null;
-  } else {
-    const lower = identifier.toLowerCase();
-    return memoryStore.users.find(u => u.email.toLowerCase() === lower || u.username.toLowerCase() === lower) || null;
-  }
-}
-
-async function getUserById(id) {
-  if (isPostgres) {
-    const res = await pool.query('SELECT id, username, email, display_name, avatar_url, banner_color, bio, status_mode, status_text, created_at FROM users WHERE id = $1', [id]);
-    return res.rows[0] || null;
-  } else {
-    const u = memoryStore.users.find(x => x.id === parseInt(id));
-    if (!u) return null;
-    const { password, ...safe } = u;
-    return safe;
-  }
-}
-
-async function createUser({ username, email, password, displayName, avatarUrl }) {
-  const finalDisplay = displayName || username;
-  const finalAvatar = avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(username)}`;
-
-  if (isPostgres) {
-    const res = await pool.query(
-      `INSERT INTO users (username, email, password, display_name, avatar_url) 
-       VALUES ($1, $2, $3, $4, $5) 
-       RETURNING id, username, email, display_name, avatar_url, banner_color, bio, status_mode, status_text, created_at`,
-      [username, email, password, finalDisplay, finalAvatar]
-    );
-    const user = res.rows[0];
-
-    // Auto-join default server if exists
-    const srv = await pool.query('SELECT id FROM servers WHERE invite_code = $1', ['AMIGOS10']);
-    if (srv.rows.length > 0) {
-      await pool.query(
-        'INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-        [srv.rows[0].id, user.id, 'member']
-      );
+const removeMember = (serverId, userId) =>
+  q('DELETE FROM server_members WHERE server_id = $1 AND user_id = $2', [serverId, userId]);
+const setMemberRole = (serverId, userId, role) =>
+  q('UPDATE server_members SET role = $1 WHERE server_id = $2 AND user_id = $3', [role, serverId, userId]);
+async function regenerateServerInvite(serverId) {
+  for (let i = 0; i < 8; i++) {
+    try {
+      const row = await one('UPDATE servers SET invite_code = $1 WHERE id = $2 RETURNING invite_code', [sec.generateInviteCode(), serverId]);
+      return row && row.invite_code;
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
     }
-    return user;
-  } else {
-    const id = memoryStore.nextIds.user++;
-    const user = {
-      id,
-      username,
-      email,
-      password,
-      display_name: finalDisplay,
-      avatar_url: finalAvatar,
-      banner_color: '#5865F2',
-      bio: '',
-      status_mode: 'online',
-      status_text: '',
-      created_at: new Date()
-    };
-    memoryStore.users.push(user);
-    // Auto-join default server
-    const srv = memoryStore.servers.find(s => s.invite_code === 'AMIGOS10');
-    if (srv) {
-      memoryStore.server_members.push({ server_id: srv.id, user_id: id, role: 'member', joined_at: new Date() });
-    }
-    const { password: _, ...safe } = user;
-    return safe;
   }
+  throw new Error('Falha ao gerar convite.');
+}
+const renameServer = (serverId, name) => q('UPDATE servers SET name = $1 WHERE id = $2', [name, serverId]);
+
+const getServerChannels = (serverId) =>
+  many('SELECT id, server_id, name, type, topic, created_at FROM channels WHERE server_id = $1 ORDER BY type ASC, id ASC', [serverId]);
+const getChannel = (id) => one('SELECT id, server_id, name, type, topic FROM channels WHERE id = $1', [id]);
+const createChannel = ({ serverId, name, type, topic }) =>
+  one('INSERT INTO channels (server_id, name, type, topic) VALUES ($1, $2, $3, $4) RETURNING id, server_id, name, type, topic, created_at', [
+    serverId, name, type, topic || ''
+  ]);
+async function deleteChannel(id) {
+  await q('DELETE FROM messages WHERE channel_id = $1', [id]);
+  await q('DELETE FROM channels WHERE id = $1', [id]);
+}
+const getServerMembers = (serverId) =>
+  many(
+    `SELECT u.id, u.username, u.display_name, u.avatar_url, u.status_mode, u.status_text, sm.role
+     FROM server_members sm JOIN users u ON u.id = sm.user_id
+     WHERE sm.server_id = $1 ORDER BY u.display_name ASC`,
+    [serverId]
+  );
+const getServerMemberIds = async (serverId) => (await many('SELECT user_id FROM server_members WHERE server_id = $1', [serverId])).map((r) => r.user_id);
+
+// Resolve em uma consulta: o canal e o papel do usuário no servidor dele (null = não é membro).
+async function getChannelAccess(channelId, userId) {
+  const ch = await getChannel(channelId);
+  if (!ch) return null;
+  const role = await getMemberRole(ch.server_id, userId);
+  return role ? { channel: ch, role } : null;
 }
 
-async function updateUserProfile(id, { displayName, avatarUrl, bannerColor, bio, statusMode, statusText }) {
-  if (isPostgres) {
-    const res = await pool.query(
-      `UPDATE users 
-       SET display_name = COALESCE($1, display_name),
-           avatar_url = COALESCE($2, avatar_url),
-           banner_color = COALESCE($3, banner_color),
-           bio = COALESCE($4, bio),
-           status_mode = COALESCE($5, status_mode),
-           status_text = COALESCE($6, status_text)
-       WHERE id = $7
-       RETURNING id, username, email, display_name, avatar_url, banner_color, bio, status_mode, status_text`,
-      [displayName, avatarUrl, bannerColor, bio, statusMode, statusText, id]
-    );
-    return res.rows[0];
-  } else {
-    const user = memoryStore.users.find(u => u.id === parseInt(id));
-    if (!user) return null;
-    if (displayName !== undefined) user.display_name = displayName;
-    if (avatarUrl !== undefined) user.avatar_url = avatarUrl;
-    if (bannerColor !== undefined) user.banner_color = bannerColor;
-    if (bio !== undefined) user.bio = bio;
-    if (statusMode !== undefined) user.status_mode = statusMode;
-    if (statusText !== undefined) user.status_text = statusText;
-    const { password, ...safe } = user;
-    return safe;
-  }
+async function deleteServerCascade(serverId) {
+  const chans = await many('SELECT id FROM channels WHERE server_id = $1', [serverId]);
+  for (const c of chans) await q('DELETE FROM messages WHERE channel_id = $1', [c.id]);
+  await q('DELETE FROM channels WHERE server_id = $1', [serverId]);
+  await q('DELETE FROM server_invites WHERE server_id = $1', [serverId]);
+  await q('DELETE FROM server_members WHERE server_id = $1', [serverId]);
+  await q('DELETE FROM servers WHERE id = $1', [serverId]);
+  return chans.map((c) => c.id);
 }
 
-// Servers
-async function getUserServers(userId) {
-  if (isPostgres) {
-    const res = await pool.query(
-      `SELECT s.* FROM servers s 
-       JOIN server_members sm ON sm.server_id = s.id 
-       WHERE sm.user_id = $1 
-       ORDER BY s.id ASC`,
-      [userId]
-    );
-    return res.rows;
-  } else {
-    const memberships = memoryStore.server_members.filter(m => m.user_id === parseInt(userId));
-    const serverIds = memberships.map(m => m.server_id);
-    return memoryStore.servers.filter(s => serverIds.includes(s.id));
-  }
+async function transferOwnership(serverId, newOwnerId) {
+  await q('UPDATE servers SET owner_id = $1 WHERE id = $2', [newOwnerId, serverId]);
+  await setMemberRole(serverId, newOwnerId, 'owner');
 }
 
-async function createServer({ name, iconUrl, ownerId }) {
-  const inviteCode = 'INV-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-  const icon = iconUrl || `https://api.dicebear.com/7.x/identicon/svg?seed=${encodeURIComponent(name)}`;
-
-  if (isPostgres) {
-    const res = await pool.query(
-      'INSERT INTO servers (name, icon_url, owner_id, invite_code) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, icon, ownerId, inviteCode]
-    );
-    const server = res.rows[0];
-    await pool.query('INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, $3)', [server.id, ownerId, 'owner']);
-
-    // Default channels
-    await pool.query('INSERT INTO channels (server_id, name, type, topic) VALUES ($1, $2, $3, $4)', [server.id, 'geral', 'text', 'Canal de texto principal']);
-    await pool.query('INSERT INTO channels (server_id, name, type, topic) VALUES ($1, $2, $3, $4)', [server.id, 'Geral Voz', 'voice', 'Canal de voz principal']);
-
-    return server;
-  } else {
-    const srv = {
-      id: memoryStore.nextIds.server++,
-      name,
-      icon_url: icon,
-      owner_id: parseInt(ownerId),
-      invite_code: inviteCode,
-      created_at: new Date()
-    };
-    memoryStore.servers.push(srv);
-    memoryStore.server_members.push({ server_id: srv.id, user_id: parseInt(ownerId), role: 'owner', joined_at: new Date() });
-    memoryStore.channels.push({ id: memoryStore.nextIds.channel++, server_id: srv.id, name: 'geral', type: 'text', topic: 'Canal de texto principal' });
-    memoryStore.channels.push({ id: memoryStore.nextIds.channel++, server_id: srv.id, name: 'Geral Voz', type: 'voice', topic: 'Canal de voz principal' });
-    return srv;
+// Convites de servidor enviados a amigos
+async function createServerInvite(serverId, fromId, toId) {
+  try {
+    return await one('INSERT INTO server_invites (server_id, from_user_id, to_user_id) VALUES ($1, $2, $3) RETURNING *', [serverId, fromId, toId]);
+  } catch (err) {
+    if (isUniqueViolation(err)) return null;
+    throw err;
   }
 }
+const getServerInvite = (id) => one('SELECT * FROM server_invites WHERE id = $1', [id]);
+const deleteServerInvite = (id) => q('DELETE FROM server_invites WHERE id = $1', [id]);
+const getPendingServerInvites = (userId) =>
+  many(
+    `SELECT si.id, si.server_id, si.created_at, s.name AS server_name, s.icon_url AS server_icon,
+            u.id AS from_id, u.username AS from_username, u.display_name AS from_display_name
+     FROM server_invites si
+     JOIN servers s ON s.id = si.server_id
+     JOIN users u ON u.id = si.from_user_id
+     WHERE si.to_user_id = $1 ORDER BY si.id DESC`,
+    [userId]
+  );
 
-async function joinServerByInvite(inviteCode, userId) {
-  if (isPostgres) {
-    const srv = await pool.query('SELECT * FROM servers WHERE LOWER(invite_code) = LOWER($1)', [inviteCode.trim()]);
-    if (srv.rows.length === 0) return null;
-    const server = srv.rows[0];
-    await pool.query(
-      'INSERT INTO server_members (server_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-      [server.id, userId, 'member']
-    );
-    return server;
-  } else {
-    const srv = memoryStore.servers.find(s => s.invite_code.toLowerCase() === inviteCode.trim().toLowerCase());
-    if (!srv) return null;
-    const already = memoryStore.server_members.some(m => m.server_id === srv.id && m.user_id === parseInt(userId));
-    if (!already) {
-      memoryStore.server_members.push({ server_id: srv.id, user_id: parseInt(userId), role: 'member', joined_at: new Date() });
-    }
-    return srv;
-  }
+// ---------------------------------------------------------------------------
+// Mensagens de canal
+// ---------------------------------------------------------------------------
+async function getChannelMessages(channelId, limit = 60) {
+  const rows = await many(
+    `SELECT m.id, m.channel_id, m.user_id, m.content, m.attachments, m.created_at,
+            u.username, u.display_name, u.avatar_url, u.banner_color
+     FROM messages m JOIN users u ON u.id = m.user_id
+     WHERE m.channel_id = $1 ORDER BY m.id DESC LIMIT $2`,
+    [channelId, limit]
+  );
+  return rows.reverse().map(fixMsg);
 }
-
-async function getServerChannels(serverId) {
-  if (isPostgres) {
-    const res = await pool.query('SELECT * FROM channels WHERE server_id = $1 ORDER BY type ASC, id ASC', [serverId]);
-    return res.rows;
-  } else {
-    return memoryStore.channels.filter(c => c.server_id === parseInt(serverId));
-  }
+async function createMessage({ channelId, userId, content, attachments }) {
+  const msg = await one(
+    'INSERT INTO messages (channel_id, user_id, content, attachments) VALUES ($1, $2, $3, $4) RETURNING id, channel_id, user_id, content, attachments, created_at',
+    [channelId, userId, content, JSON.stringify(attachments || [])]
+  );
+  const u = await one('SELECT username, display_name, avatar_url, banner_color FROM users WHERE id = $1', [userId]);
+  return fixMsg({ ...msg, ...(u || {}) });
 }
+const getMessage = (id) => one('SELECT id, channel_id, user_id FROM messages WHERE id = $1', [id]);
+const deleteMessage = (id) => q('DELETE FROM messages WHERE id = $1', [id]);
 
-async function createChannel({ serverId, name, type, topic }) {
-  const cleanName = name.trim().toLowerCase().replace(/\s+/g, '-');
-  if (isPostgres) {
-    const res = await pool.query(
-      'INSERT INTO channels (server_id, name, type, topic) VALUES ($1, $2, $3, $4) RETURNING *',
-      [serverId, cleanName, type || 'text', topic || '']
-    );
-    return res.rows[0];
-  } else {
-    const ch = {
-      id: memoryStore.nextIds.channel++,
-      server_id: parseInt(serverId),
-      name: cleanName,
-      type: type || 'text',
-      topic: topic || '',
-      created_at: new Date()
-    };
-    memoryStore.channels.push(ch);
-    return ch;
-  }
+// ---------------------------------------------------------------------------
+// Amizades e mensagens diretas
+// ---------------------------------------------------------------------------
+const findFriendship = (a, b) =>
+  one('SELECT * FROM friends WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)', [a, b]);
+async function areFriends(a, b) {
+  const f = await findFriendship(a, b);
+  return !!f && f.status === 'accepted';
 }
-
-async function getServerMembers(serverId) {
-  if (isPostgres) {
-    const res = await pool.query(
-      `SELECT u.id, u.username, u.display_name, u.avatar_url, u.status_mode, u.status_text, sm.role
-       FROM server_members sm
-       JOIN users u ON u.id = sm.user_id
-       WHERE sm.server_id = $1
-       ORDER BY sm.role DESC, u.display_name ASC`,
-      [serverId]
-    );
-    return res.rows;
-  } else {
-    const members = memoryStore.server_members.filter(m => m.server_id === parseInt(serverId));
-    return members.map(m => {
-      const u = memoryStore.users.find(x => x.id === m.user_id);
-      return {
-        id: u ? u.id : m.user_id,
-        username: u ? u.username : 'desconhecido',
-        display_name: u ? u.display_name : 'Membro',
-        avatar_url: u ? u.avatar_url : '',
-        status_mode: u ? u.status_mode : 'offline',
-        status_text: u ? u.status_text : '',
-        role: m.role
-      };
-    });
-  }
-}
-
-// Messages
-async function getChannelMessages(channelId, limit = 50) {
-  if (isPostgres) {
-    const res = await pool.query(
-      `SELECT m.*, u.username, u.display_name, u.avatar_url, u.banner_color
-       FROM messages m
-       JOIN users u ON u.id = m.user_id
-       WHERE m.channel_id = $1
-       ORDER BY m.created_at DESC
-       LIMIT $2`,
-      [channelId, limit]
-    );
-    return res.rows.reverse();
-  } else {
-    const msgs = memoryStore.messages
-      .filter(m => m.channel_id === parseInt(channelId))
-      .slice(-limit)
-      .map(m => {
-        const u = memoryStore.users.find(x => x.id === m.user_id);
-        return {
-          ...m,
-          username: u ? u.username : 'usuário',
-          display_name: u ? u.display_name : 'Usuário',
-          avatar_url: u ? u.avatar_url : '',
-          banner_color: u ? u.banner_color : '#5865F2'
-        };
-      });
-    return msgs;
-  }
-}
-
-async function createMessage({ channelId, userId, content, attachments = [] }) {
-  if (isPostgres) {
-    const res = await pool.query(
-      `INSERT INTO messages (channel_id, user_id, content, attachments) 
-       VALUES ($1, $2, $3, $4) 
-       RETURNING *`,
-      [channelId, userId, content, JSON.stringify(attachments)]
-    );
-    const msg = res.rows[0];
-    const u = await pool.query('SELECT username, display_name, avatar_url, banner_color FROM users WHERE id = $1', [userId]);
-    return { ...msg, ...(u.rows[0] || {}) };
-  } else {
-    const msg = {
-      id: memoryStore.nextIds.message++,
-      channel_id: parseInt(channelId),
-      user_id: parseInt(userId),
-      content,
-      attachments,
-      created_at: new Date()
-    };
-    memoryStore.messages.push(msg);
-    const u = memoryStore.users.find(x => x.id === parseInt(userId));
-    return {
-      ...msg,
-      username: u ? u.username : 'usuário',
-      display_name: u ? u.display_name : 'Usuário',
-      avatar_url: u ? u.avatar_url : '',
-      banner_color: u ? u.banner_color : '#5865F2'
-    };
-  }
-}
-
-// Password Reset
-async function resetUserPassword(login, newHashedPassword) {
-  if (isPostgres) {
-    const res = await pool.query(
-      `UPDATE users SET password = $1 
-       WHERE LOWER(email) = LOWER($2) OR LOWER(username) = LOWER($2) 
-       RETURNING id, username, email, display_name`,
-      [newHashedPassword, login.trim()]
-    );
-    return res.rows[0] || null;
-  } else {
-    const user = memoryStore.users.find(
-      u => u.email.toLowerCase() === login.trim().toLowerCase() || u.username.toLowerCase() === login.trim().toLowerCase()
-    );
-    if (!user) return null;
-    user.password = newHashedPassword;
-    return { id: user.id, username: user.username, email: user.email, display_name: user.display_name };
-  }
-}
-
-// Friends Operations
-async function sendFriendRequest(userId, targetLogin) {
-  const target = await getUserByEmailOrUsername(targetLogin.trim());
-  if (!target) throw new Error('Usuário não encontrado. Verifique o nome de usuário ou e-mail.');
-  if (target.id === parseInt(userId)) throw new Error('Você não pode adicionar a si mesmo.');
-
-  if (isPostgres) {
-    // Check if relation already exists
-    const existing = await pool.query(
-      `SELECT * FROM friends WHERE (user_id = $1 AND friend_id = $2) OR (user_id = $2 AND friend_id = $1)`,
-      [userId, target.id]
-    );
-
-    if (existing.rows.length > 0) {
-      const rel = existing.rows[0];
-      if (rel.status === 'accepted') throw new Error('Vocês já são amigos!');
-      throw new Error('Já existe um pedido de amizade pendente.');
-    }
-
-    const res = await pool.query(
-      `INSERT INTO friends (user_id, friend_id, status) VALUES ($1, $2, 'pending') RETURNING *`,
-      [userId, target.id]
-    );
-    return { ...res.rows[0], targetUser: target };
-  } else {
-    if (!memoryStore.friends) memoryStore.friends = [];
-    const exists = memoryStore.friends.some(
-      f => (f.user_id === userId && f.friend_id === target.id) || (f.user_id === target.id && f.friend_id === userId)
-    );
-    if (exists) throw new Error('Já existe um pedido de amizade ou vocês já são amigos.');
-    const rel = { id: Date.now(), user_id: userId, friend_id: target.id, status: 'pending', created_at: new Date() };
-    memoryStore.friends.push(rel);
-    return { ...rel, targetUser: target };
-  }
-}
+const createFriendRequest = (from, to) =>
+  one("INSERT INTO friends (user_id, friend_id, status) VALUES ($1, $2, 'pending') RETURNING *", [from, to]);
+const countFriends = (userId) =>
+  count("SELECT COUNT(*) AS n FROM friends WHERE status = 'accepted' AND (user_id = $1 OR friend_id = $1)", [userId]);
 
 async function getFriends(userId) {
-  const currentId = parseInt(userId);
-  if (isPostgres) {
-    const res = await pool.query(
-      `SELECT f.id as friendship_id, f.status, f.created_at,
-              f.user_id as sender_id, f.friend_id as receiver_id,
-              u.id as user_id, u.username, u.display_name, u.avatar_url, u.status_mode, u.status_text
-       FROM friends f
-       JOIN users u ON (CASE WHEN f.user_id = $1 THEN f.friend_id ELSE f.user_id END) = u.id
-       WHERE f.user_id = $1 OR f.friend_id = $1
-       ORDER BY f.status ASC, u.display_name ASC`,
-      [currentId]
-    );
-
-    return res.rows.map(row => ({
-      friendshipId: row.friendship_id,
-      status: row.status,
-      isIncoming: row.status === 'pending' && row.receiver_id === currentId,
-      isOutgoing: row.status === 'pending' && row.sender_id === currentId,
-      user: {
-        id: row.user_id,
-        username: row.username,
-        display_name: row.display_name,
-        avatar_url: row.avatar_url,
-        status_mode: row.status_mode,
-        status_text: row.status_text
-      }
-    }));
-  } else {
-    if (!memoryStore.friends) memoryStore.friends = [];
-    return memoryStore.friends
-      .filter(f => f.user_id === currentId || f.friend_id === currentId)
-      .map(f => {
-        const otherId = f.user_id === currentId ? f.friend_id : f.user_id;
-        const otherUser = memoryStore.users.find(u => u.id === otherId) || {};
-        return {
-          friendshipId: f.id,
-          status: f.status,
-          isIncoming: f.status === 'pending' && f.friend_id === currentId,
-          isOutgoing: f.status === 'pending' && f.user_id === currentId,
-          user: {
-            id: otherUser.id || otherId,
-            username: otherUser.username || 'amigo',
-            display_name: otherUser.display_name || otherUser.username || 'Amigo',
-            avatar_url: otherUser.avatar_url || '',
-            status_mode: otherUser.status_mode || 'online',
-            status_text: otherUser.status_text || ''
-          }
-        };
-      });
-  }
+  const rels = await many('SELECT * FROM friends WHERE user_id = $1 OR friend_id = $1 ORDER BY id DESC', [userId]);
+  if (!rels.length) return [];
+  const otherIds = [...new Set(rels.map((r) => (r.user_id === userId ? r.friend_id : r.user_id)))];
+  const users = await many(`SELECT ${PUBLIC_USER_COLS} FROM users WHERE id IN (${placeholders(otherIds)})`, otherIds);
+  const byId = new Map(users.map((u) => [u.id, u]));
+  return rels
+    .map((r) => {
+      const otherId = r.user_id === userId ? r.friend_id : r.user_id;
+      const u = byId.get(otherId);
+      if (!u) return null;
+      return {
+        friendshipId: r.id,
+        status: r.status,
+        isIncoming: r.status === 'pending' && r.friend_id === userId,
+        isOutgoing: r.status === 'pending' && r.user_id === userId,
+        user: {
+          id: u.id,
+          username: u.username,
+          display_name: u.display_name,
+          avatar_url: u.avatar_url,
+          status_mode: u.status_mode,
+          status_text: u.status_text
+        }
+      };
+    })
+    .filter(Boolean);
 }
+const getAcceptedFriendIds = async (userId) => {
+  const rows = await many("SELECT user_id, friend_id FROM friends WHERE status = 'accepted' AND (user_id = $1 OR friend_id = $1)", [userId]);
+  return rows.map((r) => (r.user_id === userId ? r.friend_id : r.user_id));
+};
+const acceptFriendRequest = (userId, friendshipId) =>
+  one("UPDATE friends SET status = 'accepted' WHERE id = $1 AND friend_id = $2 AND status = 'pending' RETURNING *", [friendshipId, userId]);
+const getFriendship = (id) => one('SELECT * FROM friends WHERE id = $1', [id]);
+const removeFriendship = (id) => q('DELETE FROM friends WHERE id = $1', [id]);
 
-async function acceptFriendRequest(userId, friendshipId) {
-  if (isPostgres) {
-    const res = await pool.query(
-      `UPDATE friends SET status = 'accepted' WHERE id = $1 AND friend_id = $2 RETURNING *`,
-      [friendshipId, userId]
-    );
-    return res.rows[0] || null;
-  } else {
-    if (!memoryStore.friends) return null;
-    const f = memoryStore.friends.find(x => x.id === parseInt(friendshipId) && x.friend_id === parseInt(userId));
-    if (f) f.status = 'accepted';
-    return f || null;
-  }
+async function getDirectMessages(a, b, limit = 80) {
+  const rows = await many(
+    `SELECT dm.id, dm.sender_id, dm.receiver_id, dm.content, dm.attachments, dm.created_at,
+            u.username, u.display_name, u.avatar_url
+     FROM direct_messages dm JOIN users u ON u.id = dm.sender_id
+     WHERE (dm.sender_id = $1 AND dm.receiver_id = $2) OR (dm.sender_id = $2 AND dm.receiver_id = $1)
+     ORDER BY dm.id DESC LIMIT $3`,
+    [a, b, limit]
+  );
+  return rows.reverse().map(fixMsg);
 }
-
-async function removeFriend(userId, friendshipId) {
-  if (isPostgres) {
-    await pool.query(
-      `DELETE FROM friends WHERE id = $1 AND (user_id = $2 OR friend_id = $2)`,
-      [friendshipId, userId]
-    );
-    return true;
-  } else {
-    if (!memoryStore.friends) return true;
-    memoryStore.friends = memoryStore.friends.filter(
-      x => !(x.id === parseInt(friendshipId) && (x.user_id === parseInt(userId) || x.friend_id === parseInt(userId)))
-    );
-    return true;
-  }
+async function createDirectMessage(senderId, receiverId, content, attachments) {
+  const dm = await one(
+    'INSERT INTO direct_messages (sender_id, receiver_id, content, attachments) VALUES ($1, $2, $3, $4) RETURNING id, sender_id, receiver_id, content, attachments, created_at',
+    [senderId, receiverId, content, JSON.stringify(attachments || [])]
+  );
+  const u = await one('SELECT username, display_name, avatar_url FROM users WHERE id = $1', [senderId]);
+  return fixMsg({ ...dm, ...(u || {}) });
 }
+const getDirectMessage = (id) => one('SELECT id, sender_id, receiver_id FROM direct_messages WHERE id = $1', [id]);
+const deleteDirectMessage = (id) => q('DELETE FROM direct_messages WHERE id = $1', [id]);
 
-// Direct Messages
-async function getDirectMessages(userId1, userId2, limit = 60) {
-  const u1 = parseInt(userId1);
-  const u2 = parseInt(userId2);
-
-  if (isPostgres) {
-    const res = await pool.query(
-      `SELECT dm.*, u.username, u.display_name, u.avatar_url 
-       FROM direct_messages dm
-       JOIN users u ON u.id = dm.sender_id
-       WHERE (dm.sender_id = $1 AND dm.receiver_id = $2) 
-          OR (dm.sender_id = $2 AND dm.receiver_id = $1)
-       ORDER BY dm.created_at ASC
-       LIMIT $3`,
-      [u1, u2, limit]
-    );
-    return res.rows;
-  } else {
-    if (!memoryStore.direct_messages) memoryStore.direct_messages = [];
-    return memoryStore.direct_messages
-      .filter(m => (m.sender_id === u1 && m.receiver_id === u2) || (m.sender_id === u2 && m.receiver_id === u1))
-      .slice(-limit)
-      .map(m => {
-        const u = memoryStore.users.find(x => x.id === m.sender_id) || {};
-        return {
-          ...m,
-          username: u.username || 'amigo',
-          display_name: u.display_name || u.username || 'Amigo',
-          avatar_url: u.avatar_url || ''
-        };
-      });
-  }
-}
-
-async function createDirectMessage(senderId, receiverId, content, attachments = []) {
-  const sId = parseInt(senderId);
-  const rId = parseInt(receiverId);
-
-  if (isPostgres) {
-    const res = await pool.query(
-      `INSERT INTO direct_messages (sender_id, receiver_id, content, attachments) 
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [sId, rId, content, JSON.stringify(attachments)]
-    );
-    const dm = res.rows[0];
-    const u = await pool.query('SELECT username, display_name, avatar_url FROM users WHERE id = $1', [sId]);
-    return { ...dm, ...(u.rows[0] || {}) };
-  } else {
-    if (!memoryStore.direct_messages) memoryStore.direct_messages = [];
-    const dm = {
-      id: Date.now(),
-      sender_id: sId,
-      receiver_id: rId,
-      content,
-      attachments,
-      created_at: new Date()
-    };
-    memoryStore.direct_messages.push(dm);
-    const u = memoryStore.users.find(x => x.id === sId) || {};
-    return {
-      ...dm,
-      username: u.username || 'amigo',
-      display_name: u.display_name || u.username || 'Amigo',
-      avatar_url: u.avatar_url || ''
-    };
-  }
-}
-
-function getDatabaseStatus() {
+// ---------------------------------------------------------------------------
+// LGPD: exportação e exclusão de dados do titular
+// ---------------------------------------------------------------------------
+async function exportUserData(userId) {
+  const profile = await getUserById(userId);
+  const servers = await getUserServers(userId);
+  const messages = (
+    await many('SELECT id, channel_id, content, attachments, created_at FROM messages WHERE user_id = $1 ORDER BY id ASC', [userId])
+  ).map(fixMsg);
+  const dms = (
+    await many(
+      'SELECT id, sender_id, receiver_id, content, attachments, created_at FROM direct_messages WHERE sender_id = $1 OR receiver_id = $1 ORDER BY id ASC',
+      [userId]
+    )
+  ).map(fixMsg);
+  const friends = await getFriends(userId);
+  const recovery = await countUnusedRecoveryCodes(userId);
   return {
-    isPostgres,
-    type: isPostgres ? 'Neon PostgreSQL (Cloud)' : 'Armazenamento Local (Memória)',
-    urlConfigured: !!process.env.DATABASE_URL
+    exportedAt: new Date().toISOString(),
+    notice:
+      'Exportação dos seus dados pessoais no DvD (LGPD, art. 18). A senha é armazenada apenas como hash irreversível e não é incluída.',
+    profile,
+    servers: servers.map((s) => ({ id: s.id, name: s.name, role: s.role, createdAt: s.created_at })),
+    friends: friends.map((f) => ({ status: f.status, username: f.user.username, displayName: f.user.display_name })),
+    messagesInServers: messages,
+    directMessages: dms,
+    recoveryCodesUnused: recovery
   };
 }
 
+// Exclui TODOS os dados do usuário. Servidores que ele possui são transferidos ao membro
+// mais antigo; se não houver outros membros, o servidor é apagado.
+async function deleteUserAccount(userId) {
+  const affected = { deletedServers: [], transferred: [], deletedChannelIds: [] };
+  const owned = await many('SELECT id FROM servers WHERE owner_id = $1', [userId]);
+  for (const s of owned) {
+    const others = await many(
+      'SELECT user_id FROM server_members WHERE server_id = $1 AND user_id <> $2 ORDER BY joined_at ASC, user_id ASC LIMIT 1',
+      [s.id, userId]
+    );
+    if (others.length) {
+      await transferOwnership(s.id, others[0].user_id);
+      affected.transferred.push({ serverId: s.id, newOwnerId: others[0].user_id });
+    } else {
+      const chanIds = await deleteServerCascade(s.id);
+      affected.deletedServers.push(s.id);
+      affected.deletedChannelIds.push(...chanIds);
+    }
+  }
+  await q('DELETE FROM messages WHERE user_id = $1', [userId]);
+  await q('DELETE FROM direct_messages WHERE sender_id = $1 OR receiver_id = $1', [userId]);
+  await q('DELETE FROM friends WHERE user_id = $1 OR friend_id = $1', [userId]);
+  await q('DELETE FROM server_invites WHERE from_user_id = $1 OR to_user_id = $1', [userId]);
+  await q('DELETE FROM server_members WHERE user_id = $1', [userId]);
+  await q('DELETE FROM recovery_codes WHERE user_id = $1', [userId]);
+  await q('UPDATE servers SET owner_id = NULL WHERE owner_id = $1', [userId]);
+  await q('DELETE FROM users WHERE id = $1', [userId]);
+  return affected;
+}
+
+const getDatabaseStatus = () => ({ kind: dbKind, isPostgres: dbKind === 'postgres' });
+const ping = () => q('SELECT 1');
+
 module.exports = {
   initDB,
-  getUserByEmailOrUsername,
+  close,
+  ping,
+  getDatabaseStatus,
+  isUniqueViolation,
+  // usuários
+  getUserWithSecretsByUsername,
+  getUserWithSecretsById,
   getUserById,
+  getPublicUser,
+  getAuthUser,
+  getUserByFriendCode,
+  getUserByUsername,
   createUser,
   updateUserProfile,
+  registerConsent,
+  setPassword,
+  bumpTokenVersion,
+  recordLoginFailure,
+  resetLoginFailures,
+  regenerateFriendCode,
+  replaceRecoveryCodes,
+  getUnusedRecoveryCodes,
+  markRecoveryCodeUsed,
+  countUnusedRecoveryCodes,
+  // servidores
   getUserServers,
+  getServer,
+  getMemberRole,
+  countOwnedServers,
+  countJoinedServers,
+  countServerMembers,
+  countServerChannels,
   createServer,
-  joinServerByInvite,
+  getServerByInvite,
+  addMember,
+  removeMember,
+  setMemberRole,
+  regenerateServerInvite,
+  renameServer,
   getServerChannels,
+  getChannel,
   createChannel,
+  deleteChannel,
   getServerMembers,
+  getServerMemberIds,
+  getChannelAccess,
+  deleteServerCascade,
+  transferOwnership,
+  createServerInvite,
+  getServerInvite,
+  deleteServerInvite,
+  getPendingServerInvites,
+  // mensagens
   getChannelMessages,
   createMessage,
-  resetUserPassword,
-  sendFriendRequest,
+  getMessage,
+  deleteMessage,
+  // amizades / DMs
+  findFriendship,
+  areFriends,
+  createFriendRequest,
+  countFriends,
   getFriends,
+  getAcceptedFriendIds,
   acceptFriendRequest,
-  removeFriend,
+  getFriendship,
+  removeFriendship,
   getDirectMessages,
   createDirectMessage,
-  getDatabaseStatus
+  getDirectMessage,
+  deleteDirectMessage,
+  // LGPD
+  exportUserData,
+  deleteUserAccount
 };

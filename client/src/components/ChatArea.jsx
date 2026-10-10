@@ -17,6 +17,7 @@ import {
   Maximize2
 } from 'lucide-react';
 import { playMessageSound } from '../utils/audio';
+import { generateAvatar } from '../utils/avatar';
 
 const COMMON_EMOJIS = ['😀', '😂', '🔥', '🎮', '💀', '🚀', '❤️', '👀', '👍', '🤡', '⚡', '🎉', '🏆', '🍕', '😎'];
 
@@ -289,7 +290,7 @@ export function ChatArea({
                 <img
                   src={
                     msg.avatar_url ||
-                    `https://api.dicebear.com/7.x/bottts/svg?seed=${msg.username || 'user'}`
+                    generateAvatar(msg.username || 'user')
                   }
                   alt={msg.username}
                   className="w-10 h-10 rounded-full object-cover flex-shrink-0 mt-0.5 shadow-sm"

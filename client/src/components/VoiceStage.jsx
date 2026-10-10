@@ -19,6 +19,7 @@ import {
   Settings,
   ShieldCheck
 } from 'lucide-react';
+import { generateAvatar } from '../utils/avatar';
 
 function PeerTile({ peer, isLocal, voiceState, currentUser }) {
   const videoRef = useRef(null);
@@ -96,7 +97,7 @@ function PeerTile({ peer, isLocal, voiceState, currentUser }) {
             <img
               src={
                 user?.avatar_url ||
-                `https://api.dicebear.com/7.x/bottts/svg?seed=${user?.username || 'user'}`
+                generateAvatar(user?.username || 'user')
               }
               alt={user?.display_name || user?.username}
               className={`w-20 h-20 rounded-full object-cover transition-all duration-200 ${

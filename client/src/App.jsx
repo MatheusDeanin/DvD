@@ -13,6 +13,8 @@ import { FriendsView } from './components/FriendsView';
 import { DirectMessageChat } from './components/DirectMessageChat';
 import { RemoteAudioListener } from './components/RemoteAudioListener';
 import { useWebRTC } from './hooks/useWebRTC';
+import { generateAvatar } from './utils/avatar';
+import { playRingSound } from './utils/audio';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -40,6 +42,8 @@ export default function App() {
   const [createChannelDefaultType, setCreateChannelDefaultType] = useState('text');
   const [showMembers, setShowMembers] = useState(true);
   const [keepAliveStatus, setKeepAliveStatus] = useState(null);
+
+  const [incomingCall, setIncomingCall] = useState(null);
 
   // Socket
   const socketRef = useRef(null);
@@ -96,14 +100,14 @@ export default function App() {
     }
 
     const newSocket = io(window.location.origin, {
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      auth: { token }
     });
     socketRef.current = newSocket;
     setSocket(newSocket);
 
     newSocket.on('connect', () => {
       console.log('Socket conectado!', newSocket.id);
-      newSocket.emit('register_user', currentUser);
     });
 
     newSocket.on('new_message', (newMsg) => {
@@ -162,12 +166,37 @@ export default function App() {
       );
     });
 
+    newSocket.on('dm_call_incoming', (callInfo) => {
+      setIncomingCall(callInfo);
+      // Aqui você poderia tocar um som de "Ring" chamando...
+    });
+
+    newSocket.on('dm_call_ended', (data) => {
+      setIncomingCall((prev) => {
+        if (prev && prev.channelId === data.channelId) return null;
+        return prev;
+      });
+    });
+
+    newSocket.on('dm_call_declined', (data) => {
+      // Opcional: mostrar um toast dizendo que o amigo recusou a chamada
+    });
+
     return () => {
       newSocket.disconnect();
       socketRef.current = null;
       setSocket(null);
     };
   }, [currentUser?.id, token]);
+
+  // Ringing sound effect loop
+  useEffect(() => {
+    if (incomingCall) {
+      playRingSound();
+      const interval = setInterval(() => playRingSound(), 2000);
+      return () => clearInterval(interval);
+    }
+  }, [incomingCall]);
 
   // 3. Fetch Keep-Alive status periodically
   useEffect(() => {
@@ -203,11 +232,11 @@ export default function App() {
     })
       .then((res) => res.json())
       .then((data) => {
-        if (data.servers && data.servers.length > 0) {
+        if (data.servers) {
           setServers(data.servers);
-          if (!activeServerId) {
-            setActiveServerId(data.servers[0].id);
-          }
+        }
+        if (!activeServerId) {
+          setActiveServerId('home');
         }
       })
       .catch((err) => console.error('Erro ao carregar servidores:', err));
@@ -570,6 +599,7 @@ export default function App() {
         ) : (
           <FriendsView
             friends={friends}
+            currentUser={currentUser}
             onSendFriendRequest={handleSendFriendRequest}
             onAcceptRequest={handleAcceptFriendRequest}
             onRemoveFriend={handleRemoveFriend}
@@ -622,6 +652,45 @@ export default function App() {
           onClose={() => setShowCreateChannelModal(false)}
           onCreateChannel={handleCreateChannel}
         />
+      )}
+
+      {/* Incoming Call Modal */}
+      {incomingCall && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in select-none">
+          <div className="bg-discord-dark rounded-xl shadow-2xl border border-white/10 p-6 flex flex-col items-center max-w-sm w-full">
+            <img
+              src={incomingCall.from.avatar_url || generateAvatar(incomingCall.from.username)}
+              alt={incomingCall.from.username}
+              className="w-20 h-20 rounded-full mb-4 ring-4 ring-discord-darkest animate-pulse"
+            />
+            <h2 className="text-xl font-bold text-white mb-1">Chamada Recebida</h2>
+            <p className="text-sm text-discord-muted mb-6">
+              <strong className="text-white">{incomingCall.from.display_name || incomingCall.from.username}</strong> está te ligando...
+            </p>
+            <div className="flex items-center gap-4 w-full">
+              <button
+                onClick={() => {
+                  socket.emit('dm_call_decline', { userId: incomingCall.from.id });
+                  setIncomingCall(null);
+                }}
+                className="flex-1 py-2.5 rounded-lg bg-discord-red hover:bg-discord-red/80 font-semibold text-white transition shadow"
+              >
+                Recusar
+              </button>
+              <button
+                onClick={() => {
+                  setActiveServerId('home');
+                  setActiveDMUser(incomingCall.from);
+                  voiceState.joinVoice(incomingCall.channelId);
+                  setIncomingCall(null);
+                }}
+                className="flex-1 py-2.5 rounded-lg bg-discord-green hover:bg-discord-green/80 font-semibold text-black transition shadow"
+              >
+                Atender
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

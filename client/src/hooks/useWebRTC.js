@@ -152,19 +152,21 @@ export function useWebRTC(socket, currentUser) {
     // Remote Track received (audio, camera or screen share)
     pc.ontrack = (event) => {
       const incomingStream = event.streams[0] || new MediaStream([event.track]);
-      const isVideo = event.track.kind === 'video';
 
       setPeers((prev) => {
         const existing = prev[targetSocketId] || { user: targetUser };
-
-        // Ensure audio/video tracks are attached to a primary stream
         let primaryStream = existing.stream;
+        let screenStream = existing.screenStream;
+
         if (!primaryStream) {
-          primaryStream = incomingStream;
-        } else {
+          primaryStream = incomingStream; // First stream is always primary (audio/cam)
+        } else if (incomingStream.id === primaryStream.id) {
           if (!primaryStream.getTracks().some((t) => t.id === event.track.id)) {
             primaryStream.addTrack(event.track);
           }
+        } else {
+          // Different stream ID! This is the screen share stream
+          screenStream = incomingStream;
         }
 
         return {
@@ -173,7 +175,7 @@ export function useWebRTC(socket, currentUser) {
             ...existing,
             user: targetUser || existing.user,
             stream: primaryStream,
-            screenStream: isVideo ? incomingStream : existing.screenStream,
+            screenStream,
           },
         };
       });

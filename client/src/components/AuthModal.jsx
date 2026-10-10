@@ -19,16 +19,11 @@ export function AuthModal({ onLoginSuccess }) {
     setLoading(true);
 
     if (mode === 'forgot') {
-      if (password !== confirmPassword) {
-        setError('As senhas não coincidem.');
-        setLoading(false);
-        return;
-      }
       try {
         const res = await fetch('/api/auth/reset-password', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ login: email, newPassword: password })
+          body: JSON.stringify({ login: email, recoveryCode: confirmPassword, newPassword: password })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Falha ao redefinir senha.');
@@ -46,7 +41,7 @@ export function AuthModal({ onLoginSuccess }) {
 
     const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login';
     const payload = mode === 'register'
-      ? { username, email, password, displayName: displayName || username }
+      ? { username, email, password, displayName: displayName || username, consentLGPD: document.getElementById('consentLGPD')?.checked }
       : { login: email || username, password };
 
     try {
@@ -64,6 +59,11 @@ export function AuthModal({ onLoginSuccess }) {
       // Save token and user
       localStorage.setItem('discord_token', data.token);
       localStorage.setItem('discord_user', JSON.stringify(data.user));
+
+      if (mode === 'register' && data.recoveryCodes) {
+        alert(`IMPORTANTE! Guarde seus códigos de recuperação em um local seguro. Eles são a única forma de recuperar sua conta se você esquecer a senha:\n\n${data.recoveryCodes.join('\n')}`);
+      }
+
       onLoginSuccess(data.user, data.token);
     } catch (err) {
       setError(err.message);
@@ -226,34 +226,52 @@ export function AuthModal({ onLoginSuccess }) {
           </div>
 
           {mode === 'forgot' && (
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
-                Confirmar Nova Senha <span className="text-discord-red">*</span>
-              </label>
-              <input
-                type="password"
-                required
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-3 py-2.5 rounded-lg bg-discord-darkest border border-white/5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-discord-blurple transition-all"
-              />
-            </div>
+            <>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
+                  Código de Recuperação <span className="text-discord-red">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Seu código de 16 caracteres"
+                  className="w-full px-3 py-2.5 rounded-lg bg-discord-darkest border border-white/5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-discord-blurple transition-all"
+                />
+              </div>
+              <p className="text-xs text-discord-muted text-center">
+                Você recebeu códigos de recuperação quando criou sua conta.
+              </p>
+            </>
           )}
 
           {mode === 'register' && (
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
-                Nome de Exibição (Apelido opcional)
-              </label>
-              <input
-                type="text"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="Como seus amigos vão te ver"
-                className="w-full px-3 py-2.5 rounded-lg bg-discord-darkest border border-white/5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-discord-blurple transition-all"
-              />
-            </div>
+            <>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-discord-muted mb-1.5">
+                  Nome de Exibição (Apelido opcional)
+                </label>
+                <input
+                  type="text"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  placeholder="Como seus amigos vão te ver"
+                  className="w-full px-3 py-2.5 rounded-lg bg-discord-darkest border border-white/5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-discord-blurple transition-all"
+                />
+              </div>
+              <div className="flex items-start gap-2 mt-4 bg-discord-darkest/50 p-3 rounded-lg border border-white/5">
+                <input
+                  type="checkbox"
+                  id="consentLGPD"
+                  required
+                  className="mt-0.5 accent-discord-blurple w-4 h-4 cursor-pointer"
+                />
+                <label htmlFor="consentLGPD" className="text-xs text-discord-muted leading-tight">
+                  Eu concordo com os <a href="#" onClick={(e) => { e.preventDefault(); alert('Termos e LGPD: Nós armazenamos apenas o necessário para sua conta funcionar (email, senha, nome, status, amigos). Suas mensagens são guardadas até você apagar. Ao aceitar, você concorda com este processamento e pode solicitar a exportação ou exclusão dos seus dados a qualquer momento.'); }} className="text-discord-blurple hover:underline">Termos de Serviço e Política de Privacidade (LGPD)</a>, e consinto com o processamento dos meus dados para usar o DvD.
+                </label>
+              </div>
+            </>
           )}
 
           <button

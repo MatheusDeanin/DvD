@@ -11,9 +11,11 @@ import {
   PhoneCall,
   UserCheck
 } from 'lucide-react';
+import { generateAvatar } from '../utils/avatar';
 
 export function FriendsView({
   friends,
+  currentUser,
   onSendFriendRequest,
   onAcceptRequest,
   onRemoveFriend,
@@ -140,8 +142,24 @@ export function FriendsView({
               Adicionar Amigo
             </h2>
             <p className="text-xs text-discord-muted mb-4">
-              Você pode adicionar amigos usando o <strong>Nome de Usuário</strong> ou <strong>E-mail</strong> cadastrado deles no DvD.
+              Você pode adicionar amigos usando o <strong>Nome de Usuário</strong> ou <strong>Código de Amigo</strong> cadastrado deles no DvD.
             </p>
+
+            <div className="mb-6 p-4 rounded-lg border border-discord-blurple/30 bg-discord-blurple/10 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-bold text-discord-blurple uppercase tracking-wider mb-1">Seu Código de Amigo</p>
+                <p className="text-lg font-mono text-white tracking-widest">{currentUser?.friend_code || '------'}</p>
+              </div>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(currentUser?.friend_code);
+                  alert('Código copiado!');
+                }}
+                className="px-3 py-1.5 rounded bg-discord-blurple text-white text-xs font-bold hover:bg-discord-blurple-hover transition"
+              >
+                Copiar
+              </button>
+            </div>
 
             <form
               onSubmit={handleAddSubmit}
@@ -152,7 +170,7 @@ export function FriendsView({
                 required
                 value={targetUsername}
                 onChange={(e) => setTargetUsername(e.target.value)}
-                placeholder="Ex: player_dois ou amigo@email.com"
+                placeholder="Ex: player_dois ou código A1B2-C3D4"
                 className="flex-1 bg-transparent text-sm text-white placeholder-discord-muted focus:outline-none px-2"
               />
               <button
@@ -208,7 +226,7 @@ export function FriendsView({
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <img
-                          src={req.user?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${req.user?.username}`}
+                          src={req.user?.avatar_url || generateAvatar(req.user?.username)}
                           alt=""
                           className="w-10 h-10 rounded-full object-cover"
                         />
@@ -258,7 +276,7 @@ export function FriendsView({
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <img
-                          src={req.user?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${req.user?.username}`}
+                          src={req.user?.avatar_url || generateAvatar(req.user?.username)}
                           alt=""
                           className="w-10 h-10 rounded-full object-cover grayscale"
                         />
@@ -323,7 +341,7 @@ export function FriendsView({
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="relative flex-shrink-0">
                         <img
-                          src={friend.user?.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${friend.user?.username}`}
+                          src={friend.user?.avatar_url || generateAvatar(friend.user?.username)}
                           alt=""
                           className="w-10 h-10 rounded-full object-cover"
                         />
