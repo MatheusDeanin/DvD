@@ -16,9 +16,9 @@ export function AuthModal({ onLoginSuccess }) {
   const [recoveryCodes, setRecoveryCodes] = useState(null);
   const [pendingAuth, setPendingAuth] = useState(null);
 
-  const handleFirebaseBackendSync = async (userCredential, isRegister = false) => {
+  const handleFirebaseBackendSync = async (userCredential, isRegister = false, isOAuth = false) => {
     const token = await userCredential.user.getIdToken();
-    const acceptTerms = document.getElementById('consentLGPD')?.checked;
+    const acceptTerms = isOAuth ? true : !!document.getElementById('consentLGPD')?.checked;
     
     const res = await fetch('/api/auth/firebase', {
       method: 'POST',
@@ -71,7 +71,7 @@ export function AuthModal({ onLoginSuccess }) {
       setLoading(true);
       const provider = new GoogleAuthProvider();
       const userCred = await signInWithPopup(auth, provider);
-      await handleFirebaseBackendSync(userCred, mode === 'register');
+      await handleFirebaseBackendSync(userCred, mode === 'register', true);
     } catch (err) {
       console.error(err);
       if (err.code === 'auth/popup-closed-by-user') {
