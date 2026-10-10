@@ -30,9 +30,27 @@ const intEnv = (name, fallback) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
+let firebaseCredentials = null;
+try {
+  if (process.env.FIREBASE_CREDENTIALS) {
+    firebaseCredentials = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+  } else {
+    // Tenta carregar do arquivo local ignorado pelo git
+    const fs = require('fs');
+    const path = require('path');
+    const p = path.join(__dirname, 'firebase-service-account.json');
+    if (fs.existsSync(p)) {
+      firebaseCredentials = JSON.parse(fs.readFileSync(p, 'utf8'));
+    }
+  }
+} catch (err) {
+  console.warn(' Aviso: FIREBASE_CREDENTIALS inválido.');
+}
+
 module.exports = {
   NODE_ENV,
   IS_PROD,
+  FIREBASE_CREDENTIALS: firebaseCredentials,
   PORT: intEnv('PORT', 3001),
   JWT_SECRET: jwtSecret,
   JWT_SECRET_GENERATED: jwtSecretGenerated,

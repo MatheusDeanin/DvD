@@ -6,12 +6,14 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const { Server } = require('socket.io');
 const admin = require('firebase-admin');
-
-admin.initializeApp({
-  projectId: 'dvd-app-45586'
-});
-
 const cfg = require('./config');
+
+const adminConfig = { projectId: 'dvd-app-45586' };
+if (cfg.FIREBASE_CREDENTIALS) {
+  adminConfig.credential = admin.credential.cert(cfg.FIREBASE_CREDENTIALS);
+}
+
+admin.initializeApp(adminConfig);
 const sec = require('./security');
 const db = require('./db');
 const presence = require('./presence');
